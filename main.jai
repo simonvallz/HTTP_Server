@@ -311,6 +311,7 @@ reset :: (socket_fd: Socket) {
 
             if it.response.serialized.data != null {
                 free(it.response.serialized.data);
+                it.response.serialized.data = null;
                 it.response.serialized.count = 0;
             }
 
