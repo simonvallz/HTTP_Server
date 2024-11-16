@@ -37,8 +37,12 @@ http_server :: () {
 
     epoll_add(epoll_fd, EPOLLIN | EPOLLET, socket_fd);
 
+    sigint_fd := create_sigint_fd();
+    epoll_add(epoll_fd, EPOLLIN | EPOLLET, sigint_fd);
+
     events: [1024] epoll_event;
-    while true {
+    quit := false;
+    while !quit {
         nfds := epoll_wait(epoll_fd, events.data, events.count, -1);
         if nfds == -1 {
             perror("epoll_wait");
@@ -48,7 +52,9 @@ http_server :: () {
         for 0..nfds - 1 {
             ev := events[it];
 
-            if ev.data.fd == socket_fd {
+            if ev.data.fd == sigint_fd {
+                quit = true;
+            } else if ev.data.fd == socket_fd {
                 accept_clients(epoll_fd, socket_fd);
             } else if ev.events & EPOLLIN {
                 read_from_client(epoll_fd, ev.data.fd);
@@ -56,6 +62,8 @@ http_server :: () {
                 write_to_client(epoll_fd, ev.data.fd);
             }
         }
+
+        process_keep_alive();
 
         reset_temporary_storage();
     }
@@ -74,7 +82,10 @@ accept_clients :: (epoll_fd: s32, socket_fd: Socket) {
         }
 
         set_blocking(client_socket_fd, false);
-        add_client(client_socket_fd);
+
+        client := add_client(client_socket_fd);
+        client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
+
         epoll_add(epoll_fd, EPOLLIN | EPOLLET, client_socket_fd);
     }
 }
@@ -107,7 +118,11 @@ read_from_client :: (epoll_fd: s32, socket_fd: Socket) {
 
         handled := handle_request(client);
         if handled {
+            client.requests_handled += 1;
+            if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
+
             epoll_mod(epoll_fd, EPOLLOUT | EPOLLET, socket_fd);
+
             break;
         }
 
@@ -192,12 +207,58 @@ handle_request :: (client: *Client) -> handled: bool {
             return true;
         }
 
+        key = trim(key);
+        value = trim(value);
+
         if equal_nocase(key, "Content-Length") {
-            success: bool;
-            content_length, success = parse_int(*trim(value));
+            content_length, success := parse_int(*value);
             if !success {
                 bad_request(client);
                 return true;
+            }
+        }
+
+        if equal_nocase(key, "Connection") && equal_nocase(value, "close") {
+            client.close_after_send = true;
+        }
+
+        if equal_nocase(key, "Keep-Alive") {
+            key_values := split(value, ",",, temp);
+
+            for key_values {
+                found, key, value := split_from_left(it, "=");
+                if !found {
+                    bad_request(client);
+                    return true;
+                }
+
+                key = trim(key);
+                value = trim(value);
+
+                if equal_nocase(key, "timeout") {
+                    timeout, success := parse_int(*value);
+                    if !success {
+                        bad_request(client);
+                        return true;
+                    }
+
+                    client.keep_alive_expiration = current_time_consensus() + seconds_to_apollo(timeout);
+                }
+
+                if equal_nocase(key, "max") {
+                    max, success := parse_int(*value);
+                    if !success {
+                        bad_request(client);
+                        return true;
+                    }
+
+                    if max < 1 {
+                        bad_request(client);
+                        return true;
+                    }
+
+                    client.max_requests = max;
+                }
             }
         }
     }
@@ -219,6 +280,14 @@ handle_request :: (client: *Client) -> handled: bool {
     }
 
     return true;
+}
+
+process_keep_alive :: () {
+    now := current_time_consensus();
+
+    for clients {
+        if it.keep_alive_expiration < now  close_client(it.socket_fd);
+    }
 }
 
 bad_request :: (client: *Client) {
@@ -253,6 +322,25 @@ send_response :: (client: *Client) {
     append(*b, client.response.body);
 
     client.response.serialized = builder_to_string(*b);
+}
+
+create_sigint_fd :: () -> s32 {
+    mask: sigset_t;
+    sigemptyset(*mask);
+    sigaddset(*mask, SIGINT);
+
+    if sigprocmask(SIG_BLOCK, *mask, null) == -1 {
+        perror("sigprocmask");
+        exit(1);
+    }
+
+    sigint_fd := signalfd(-1, *mask, 0);
+    if sigint_fd == -1 {
+        perror("signalfd");
+        exit(1);
+    }
+
+    return sigint_fd;
 }
 
 epoll_add :: (epoll_fd: s32, events: u32, fd: s32) {
@@ -335,6 +423,10 @@ Client :: struct {
     response: Response;
 
     close_after_send: bool;
+
+    keep_alive_expiration: Apollo_Time;
+    max_requests := -1;
+    requests_handled: int;
 }
 
 Request :: struct {
@@ -356,6 +448,9 @@ Response :: struct {
     serialized: string; // :Free-able
     bytes_sent: int;
 }
+
+// Initial keep alive time set when a connection is accepted.
+ACCEPT_KEEP_ALIVE :: #run seconds_to_apollo(60);
 
 MAX_REQUEST_SIZE :: 65536;
 
