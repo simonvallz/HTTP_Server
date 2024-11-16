@@ -1,8 +1,35 @@
 main :: () {
     http_server();
+
+    #if MULTITHREADING {
+        while true  sleep_milliseconds(60_000);
+    }
+
+    #if DEBUG_MEMORY {
+        report_memory_leaks();
+    }
 }
 
 http_server :: () {
+    #if !MULTITHREADING {
+        thread: Thread;
+        worker(*thread);
+    } else {
+        num_cpus := get_number_of_processors() / 2;
+        num_threads := max(num_cpus, 1);
+        threads := NewArray(num_threads, Thread);
+
+        log("Starting % worker threads.\n", num_threads);
+
+        for 0..num_threads - 1 {
+            thread := *threads[it];
+            thread_init(thread, worker);
+            thread_start(thread);
+        }
+    }
+}
+
+worker :: (thread: *Thread) -> s64 {
     signal(SIGPIPE, SIG_IGN);
 
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
@@ -29,21 +56,24 @@ http_server :: () {
 
     set_blocking(socket_fd, false);
 
-    epoll_fd := epoll_create1(0);
-    if epoll_fd == -1  {
+    context.epoll_fd = epoll_create1(0);
+    if context.epoll_fd == -1  {
         perror("epoll_create");
         exit(1);
     }
 
-    epoll_add(epoll_fd, EPOLLIN | EPOLLET, socket_fd);
+    epoll_add(EPOLLIN | EPOLLET, socket_fd);
 
-    sigint_fd := create_sigint_fd();
-    epoll_add(epoll_fd, EPOLLIN | EPOLLET, sigint_fd);
+    #if !MULTITHREADING {
+        sigint_fd := create_sigint_fd();
+        epoll_add(EPOLLIN | EPOLLET, sigint_fd);
+    }
 
     events: [1024] epoll_event;
     quit := false;
+
     while !quit {
-        nfds := epoll_wait(epoll_fd, events.data, events.count, -1);
+        nfds := epoll_wait(context.epoll_fd, events.data, events.count, -1);
         if nfds == -1 {
             perror("epoll_wait");
             exit(1);
@@ -52,14 +82,19 @@ http_server :: () {
         for 0..nfds - 1 {
             ev := events[it];
 
-            if ev.data.fd == sigint_fd {
-                quit = true;
-            } else if ev.data.fd == socket_fd {
-                accept_clients(epoll_fd, socket_fd);
+            #if !MULTITHREADING {
+                if ev.data.fd == sigint_fd {
+                    quit = true;
+                    break;
+                }
+            }
+
+            if ev.data.fd == socket_fd {
+                accept_clients(socket_fd);
             } else if ev.events & EPOLLIN {
-                read_from_client(epoll_fd, ev.data.fd);
+                read_from_client(ev.data.fd);
             } else if ev.events & EPOLLOUT {
-                write_to_client(epoll_fd, ev.data.fd);
+                write_to_client(ev.data.fd);
             }
         }
 
@@ -67,9 +102,11 @@ http_server :: () {
 
         reset_temporary_storage();
     }
+
+    return 0;
 }
 
-accept_clients :: (epoll_fd: s32, socket_fd: Socket) {
+accept_clients :: (socket_fd: Socket) {
     while true {
         client_socket_fd := accept(socket_fd);
         if client_socket_fd == -1 {
@@ -86,11 +123,11 @@ accept_clients :: (epoll_fd: s32, socket_fd: Socket) {
         client := add_client(client_socket_fd);
         client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
 
-        epoll_add(epoll_fd, EPOLLIN | EPOLLET, client_socket_fd);
+        epoll_add(EPOLLIN | EPOLLET, client_socket_fd);
     }
 }
 
-read_from_client :: (epoll_fd: s32, socket_fd: Socket) {
+read_from_client :: (socket_fd: Socket) {
     client := find_client(socket_fd);
     assert(client != null);
 
@@ -121,7 +158,7 @@ read_from_client :: (epoll_fd: s32, socket_fd: Socket) {
             client.requests_handled += 1;
             if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
 
-            epoll_mod(epoll_fd, EPOLLOUT | EPOLLET, socket_fd);
+            epoll_mod(EPOLLOUT | EPOLLET, socket_fd);
 
             break;
         }
@@ -134,7 +171,7 @@ read_from_client :: (epoll_fd: s32, socket_fd: Socket) {
     }
 }
 
-write_to_client :: (epoll_fd: s32, socket_fd: Socket) {
+write_to_client :: (socket_fd: Socket) {
     client := find_client(socket_fd);
     assert(client != null);
 
@@ -165,7 +202,7 @@ write_to_client :: (epoll_fd: s32, socket_fd: Socket) {
 
     if client.response.serialized.count - client.response.bytes_sent == 0 {
         reset(socket_fd);
-        if !client.close_after_send  epoll_mod(epoll_fd, EPOLLIN | EPOLLET, socket_fd);
+        if !client.close_after_send  epoll_mod(EPOLLIN | EPOLLET, socket_fd);
     }
 }
 
@@ -285,7 +322,7 @@ handle_request :: (client: *Client) -> handled: bool {
 process_keep_alive :: () {
     now := current_time_consensus();
 
-    for clients {
+    for context.clients {
         if it.keep_alive_expiration < now  close_client(it.socket_fd);
     }
 }
@@ -343,36 +380,36 @@ create_sigint_fd :: () -> s32 {
     return sigint_fd;
 }
 
-epoll_add :: (epoll_fd: s32, events: u32, fd: s32) {
+epoll_add :: (events: u32, fd: s32) {
     ev: epoll_event;
     ev.events = events;
     ev.data.fd = fd;
 
-    if epoll_ctl(epoll_fd, .ADD, fd, *ev) == -1 {
+    if epoll_ctl(context.epoll_fd, .ADD, fd, *ev) == -1 {
         perror("epoll_ctl");
         exit(1);
     }
 }
 
-epoll_mod :: (epoll_fd: s32, events: u32,  fd: s32) {
+epoll_mod :: (events: u32,  fd: s32) {
     ev: epoll_event;
     ev.events = events;
     ev.data.fd = fd;
 
-    if epoll_ctl(epoll_fd, .MOD, fd, *ev) == -1 {
+    if epoll_ctl(context.epoll_fd, .MOD, fd, *ev) == -1 {
         perror("epoll_ctl");
         exit(1);
     }
 }
 
 add_client :: (socket_fd: Socket) -> *Client {
-    client := array_add(*clients);
+    client := array_add(*context.clients);
     client.socket_fd = socket_fd;
     return client;
 }
 
 find_client :: (socket_fd: Socket) -> *Client {
-    for * clients {
+    for * context.clients {
         if it.socket_fd == socket_fd  return it;
     }
 
@@ -380,7 +417,7 @@ find_client :: (socket_fd: Socket) -> *Client {
 }
 
 reset :: (socket_fd: Socket) {
-    for * clients {
+    for * context.clients {
         if it.socket_fd == socket_fd {
             it.request.raw_count = 0;
             it.response.bytes_sent = 0;
@@ -409,12 +446,10 @@ reset :: (socket_fd: Socket) {
 }
 
 remove_client :: (socket_fd: Socket) {
-    for clients {
+    for context.clients {
         if it.socket_fd == socket_fd  remove it;
     }
 }
-
-clients: [..] Client;
 
 Client :: struct {
     socket_fd: Socket;
@@ -454,9 +489,16 @@ ACCEPT_KEEP_ALIVE :: #run seconds_to_apollo(60);
 
 MAX_REQUEST_SIZE :: 65536;
 
-#import "Basic";
+MULTITHREADING :: false;
+DEBUG_MEMORY   :: false;
+
+#add_context clients: [..] Client;
+#add_context epoll_fd: s32;
+
+#import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
 #import "Linux";
 #import "POSIX";
 #import "Socket";
 #import "String";
 #import "System";
+#import "Thread";
