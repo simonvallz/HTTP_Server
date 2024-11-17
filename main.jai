@@ -247,6 +247,11 @@ handle_request :: (client: *Client) -> handled: bool {
         key = trim(key);
         value = trim(value);
 
+        header: Header = ---;
+        header.key = key;
+        header.value = value;
+        array_add(*client.request.headers, header);
+
         if equal_nocase(key, "Content-Length") {
             content_length, success := parse_int(*value);
             if !success {
@@ -419,6 +424,8 @@ find_client :: (socket_fd: Socket) -> *Client {
 reset :: (socket_fd: Socket) {
     for * context.clients {
         if it.socket_fd == socket_fd {
+            if it.request.headers.data != null      free(it.request.headers.data);
+            if it.response.headers.data != null     free(it.response.headers.data);
             if it.response.serialized.data != null  free(it.response.serialized.data);
 
             memset(*it.request, 0, size_of(type_of(it.request)));
@@ -435,6 +442,11 @@ remove_client :: (socket_fd: Socket) {
     }
 }
 
+Header :: struct {
+    key:   string;
+    value: string;
+}
+
 Client :: struct {
     socket_fd: Socket;
 
@@ -449,8 +461,9 @@ Client :: struct {
 }
 
 Request :: struct {
-    url:    string; // View into `raw`.
-    method: string; // View into `raw`.
+    url:     string; // View into `raw`.
+    method:  string; // View into `raw`.
+    headers: [..] Header;
 
     body: string; // View into `raw`.
 
@@ -461,6 +474,7 @@ Request :: struct {
 Response :: struct {
     status:       int;
     content_type: string; // Allocate with temporary storage!
+    headers:      [..] Header;
 
     body: string; // Allocate with temporary storage!
 
