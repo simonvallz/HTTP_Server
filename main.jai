@@ -340,8 +340,8 @@ not_found :: (client: *Client) {
 
 send_html :: (client: *Client, html: string) {
     client.response.status = 200;
-    client.response.content_type = copy_string("text/html");
-    client.response.body = copy_string(html);
+    client.response.content_type = "text/html";
+    client.response.body = html;
     send_response(client);
 }
 
@@ -419,26 +419,10 @@ find_client :: (socket_fd: Socket) -> *Client {
 reset :: (socket_fd: Socket) {
     for * context.clients {
         if it.socket_fd == socket_fd {
-            it.request.raw_count = 0;
-            it.response.bytes_sent = 0;
+            if it.response.serialized.data != null  free(it.response.serialized.data);
 
-            if it.response.content_type.data != null {
-                free(it.response.content_type.data);
-                it.response.content_type.data = null;
-                it.response.content_type.count = 0;
-            }
-
-            if it.response.body.data != null {
-                free(it.response.body.data);
-                it.response.body.data = null;
-                it.response.body.count = 0;
-            }
-
-            if it.response.serialized.data != null {
-                free(it.response.serialized.data);
-                it.response.serialized.data = null;
-                it.response.serialized.count = 0;
-            }
+            memset(*it.request, 0, size_of(type_of(it.request)));
+            memset(*it.response, 0, size_of(type_of(it.response)));
 
             break;
         }
@@ -476,9 +460,9 @@ Request :: struct {
 
 Response :: struct {
     status:       int;
-    content_type: string; // :Free-able
+    content_type: string; // Allocate with temporary storage!
 
-    body: string; // :Free-able
+    body: string; // Allocate with temporary storage!
 
     serialized: string; // :Free-able
     bytes_sent: int;
