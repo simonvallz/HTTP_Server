@@ -345,8 +345,14 @@ not_found :: (client: *Client) {
 
 send_html :: (client: *Client, html: string) {
     client.response.status = 200;
-    client.response.content_type = "text/html";
+
+    header: Header = ---;
+    header.key = "Content-Type";
+    header.value = "text/html";
+    array_add(*client.response.headers, header);
+
     client.response.body = html;
+
     send_response(client);
 }
 
@@ -356,7 +362,9 @@ send_response :: (client: *Client) {
 
     append(*b, tprint("HTTP/1.1 %\r\n", client.response.status));
 
-    if client.response.content_type.count > 0  append(*b, tprint("Content-Type: %\r\n", client.response.content_type));
+    for client.response.headers {
+        append(*b, tprint("%: %\r\n", it.key, it.value));
+    }
 
     append(*b, tprint("Content-Length: %\r\n", client.response.body.count));
     append(*b, "\r\n");
@@ -424,12 +432,13 @@ find_client :: (socket_fd: Socket) -> *Client {
 reset :: (socket_fd: Socket) {
     for * context.clients {
         if it.socket_fd == socket_fd {
-            if it.request.headers.data != null      free(it.request.headers.data);
-            if it.response.headers.data != null     free(it.response.headers.data);
             if it.response.serialized.data != null  free(it.response.serialized.data);
 
             memset(*it.request, 0, size_of(type_of(it.request)));
             memset(*it.response, 0, size_of(type_of(it.response)));
+
+            it.request.headers.allocator = temp;
+            it.response.headers.allocator = temp;
 
             break;
         }
@@ -464,6 +473,7 @@ Request :: struct {
     url:     string; // View into `raw`.
     method:  string; // View into `raw`.
     headers: [..] Header;
+    headers.allocator = temp;
 
     body: string; // View into `raw`.
 
@@ -473,8 +483,8 @@ Request :: struct {
 
 Response :: struct {
     status:       int;
-    content_type: string; // Allocate with temporary storage!
     headers:      [..] Header;
+    headers.allocator = temp;
 
     body: string; // Allocate with temporary storage!
 
