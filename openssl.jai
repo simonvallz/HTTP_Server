@@ -3,15 +3,13 @@ create_context :: () -> *SSL_CTX {
     ctx := SSL_CTX_new(method);
 
     if !ctx {
-        perror("SSL_CTX_new");
-
         error := ERR_get_error();
 
         error_string: string;
         error_string.data = ERR_error_string(error, null);
         error_string.count = c_style_strlen(error_string.data);
 
-        print("  [%]: %\n", error, error_string);
+        print("SSL_CTX_new: [%] %\n", error, error_string);
 
         exit(1);
     }
@@ -21,29 +19,25 @@ create_context :: () -> *SSL_CTX {
 
 configure_context :: (ctx: *SSL_CTX, certificate_file: string, privatekey_file: string) {
     if SSL_CTX_use_certificate_file(ctx, temp_c_string(certificate_file), SSL_FILETYPE_PEM) <= 0 {
-        perror("SSL_CTX_use_certificate_file");
-
         error := ERR_get_error();
 
         error_string: string;
         error_string.data = ERR_error_string(error, null);
         error_string.count = c_style_strlen(error_string.data);
 
-        print("  [%]: %\n", error, error_string);
+        print("SSL_CTX_use_certificate_file: [%]: %\n", error, error_string);
 
         exit(1);
     }
 
     if SSL_CTX_use_PrivateKey_file(ctx, temp_c_string(privatekey_file), SSL_FILETYPE_PEM) <= 0 {
-        perror("SSL_CTX_PrivateKey_file");
-
         error := ERR_get_error();
 
         error_string: string;
         error_string.data = ERR_error_string(error, null);
         error_string.count = c_style_strlen(error_string.data);
 
-        print("  [%]: %\n", error, error_string);
+        print("SSL_CTX_PrivateKey_file: [%]: %\n", error, error_string);
 
         exit(1);
     }

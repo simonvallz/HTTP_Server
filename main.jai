@@ -11,261 +11,29 @@ main :: () {
 }
 
 http_server :: (port: u16) {
-    #if !MULTITHREADING {
-        thread: Thread;
-
-        arguments: Worker_Arguments;
-        arguments.port = port;
-
-        thread.data = *arguments;
-
-        worker(*thread);
-    } else {
-        num_cpus := get_number_of_processors() / 2;
-        num_threads := max(num_cpus, 1);
-
-        threads := NewArray(num_threads, Thread);
-
-        arguments := New(Worker_Arguments);
-        arguments.port = port;
-
-        log("Starting % worker threads.\n", num_threads);
-
-        for 0..num_threads - 1 {
-            thread := *threads[it];
-            thread.data = arguments;
-            thread_init(thread, worker);
-            thread_start(thread);
-        }
-    }
+    platform_main_loop(port);
 }
 
 http_server_tls :: (port: u16, certificate_file: string, privatekey_file: string) {
-    #if !MULTITHREADING {
-        thread: Thread;
-
-        arguments: Worker_Arguments;
-        arguments.port = port;
-        arguments.tls = true;
-        arguments.certificate_file = certificate_file;
-        arguments.privatekey_file = privatekey_file;
-
-        thread.data = *arguments;
-
-        worker(*thread);
-    } else {
-        num_cpus := get_number_of_processors() / 2;
-        num_threads := max(num_cpus, 1);
-
-        threads := NewArray(num_threads, Thread);
-
-        arguments := New(Worker_Arguments);
-        arguments.port = port;
-        arguments.tls = true;
-        arguments.certificate_file = certificate_file;
-        arguments.privatekey_file = privatekey_file;
-
-        log("Starting % worker threads.\n", num_threads);
-
-        for 0..num_threads - 1 {
-            thread := *threads[it];
-            thread.data = arguments;
-
-            thread_init(thread, worker);
-            thread_start(thread);
-        }
-    }
+    platform_main_loop(port, true, certificate_file, privatekey_file);
 }
 
-Worker_Arguments :: struct {
-    port: u16;
-    tls: bool;
-    certificate_file: string;
-    privatekey_file: string;
-}
-
-worker :: (thread: *Thread) -> s64 {
-    arguments := cast(*Worker_Arguments) thread.data;
-
-    context.is_tls = arguments.tls;
-
+setup_socket :: (port: u16) -> Socket {
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
-    if socket_fd == INVALID_SOCKET {
-        perror("socket");
-        exit(1);
+    if socket_fd == INVALID_SOCKET  fatal("socket");
+
+    #if OS == .LINUX {
+        options := 1;
+        if setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, *options, size_of(type_of(options))) == -1  fatal("setsockopt");
     }
 
-    options :=  1;
-    if setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, *options, size_of(type_of(options))) == -1 {
-        perror("setsockopt");
-        exit(1);
-    }
+    if bind(socket_fd, INADDR_ANY, port) != 0  fatal("bind");
 
-    if bind(socket_fd, INADDR_ANY, arguments.port) != 0 {
-        perror("bind");
-        exit(1);
-    }
+    if listen(socket_fd, SOMAXCONN) != 0  fatal("listen");
 
-    if listen(socket_fd, SOMAXCONN) != 0 {
-        perror("listen");
-        exit(1);
-    }
+    set_blocking(socket_fd, #run OS == .WINDOWS);
 
-    set_blocking(socket_fd, false);
-
-    if context.is_tls {
-        context.ssl_ctx = create_context();
-        configure_context(context.ssl_ctx, arguments.certificate_file, arguments.privatekey_file);
-    }
-
-    platform_main_loop(socket_fd);
-
-    if context.is_tls {
-        SSL_CTX_free(context.ssl_ctx);
-    }
-
-    return 0;
-}
-
-accept_clients :: (socket_fd: Socket) {
-    while true {
-        client_socket_fd := accept(socket_fd);
-        if client_socket_fd == -1 {
-            error := get_last_socket_error();
-            if error == SOCKET_WOULDBLOCK  break;
-
-            log("Error: [%] when accepting a client.\n", get_error_string(error));
-
-            continue;
-        }
-
-        set_blocking(client_socket_fd, false);
-
-        client := add_client(client_socket_fd);
-        client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
-
-        if context.is_tls {
-            ssl := SSL_new(context.ssl_ctx);
-            SSL_set_fd(ssl, client_socket_fd);
-
-            result := SSL_accept(ssl);
-
-            if result <= 0 {
-                error := SSL_get_error(ssl, result);
-                if error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE {
-                    perror("SSL_accept");
-                    exit(1);
-                }
-            }
-
-            client.ssl = ssl;
-        }
-
-        platform_init_ready_for_read(client_socket_fd);
-    }
-}
-
-tls_read :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
-    if context.is_tls {
-        return SSL_read(client.ssl, buffer, xx buffer_size);
-    } else {
-        return read(client.socket_fd, buffer, buffer_size);
-    }
-}
-
-read_from_client :: (socket_fd: Socket) {
-    client := find_client(socket_fd);
-    assert(client != null);
-
-    while true {
-        offset := client.request.raw.data + client.request.raw_count;
-        max    := client.request.raw.count - client.request.raw_count;
-
-        bytes_read := tls_read(client, offset, xx max);
-        if bytes_read == -1 {
-            error := get_last_socket_error();
-            if error == SOCKET_WOULDBLOCK break;
-
-            log("Error: [%] when reading from a client.\n", get_error_string(error));
-            close_client(client);
-
-            break;
-        }
-
-        if bytes_read == 0 {
-            close_client(client);
-            break;
-        }
-
-        client.request.raw_count += bytes_read;
-
-        handled := handle_request(client);
-        if handled {
-            client.requests_handled += 1;
-            if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
-
-            platform_ready_for_write(socket_fd);
-
-            break;
-        }
-
-        if client.request.raw_count == MAX_REQUEST_SIZE {
-            log("Error: client sent to much data.\n");
-            close_client(client);
-            break;
-        }
-    }
-}
-
-tls_write :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
-    if context.is_tls {
-        return SSL_write(client.ssl, buffer, xx buffer_size);
-    } else {
-        return write(client.socket_fd, buffer, buffer_size);
-    }
-}
-
-write_to_client :: (socket_fd: Socket) {
-    client := find_client(socket_fd);
-    assert(client != null);
-
-    if client.response.serialized.count - client.response.bytes_sent == 0 {
-        if client.close_after_send {
-            close_client(client);
-            return;
-        }
-    }
-
-    while client.response.serialized.count - client.response.bytes_sent > 0 {
-        offset := client.response.serialized.data + client.response.bytes_sent;
-        max    := client.response.serialized.count - client.response.bytes_sent;
-
-        bytes_sent := tls_write(client, offset, xx max);
-        if bytes_sent == -1 {
-            error := get_last_socket_error();
-            if error == SOCKET_WOULDBLOCK  break;
-
-            log("Error: [%] when sending to a client.\n", get_error_string(error));
-            close_client(client);
-
-            break;
-        }
-
-        client.response.bytes_sent += bytes_sent;
-    }
-
-    if client.response.serialized.count - client.response.bytes_sent == 0 {
-        reset(client);
-        if !client.close_after_send  platform_ready_for_read(socket_fd);
-    }
-}
-
-close_client :: (client: *Client) {
-    socket_fd := client.socket_fd;
-
-    reset(client);
-    remove_client(client);
-    close_and_reset(*socket_fd);
+    return socket_fd;
 }
 
 handle_request :: (client: *Client) -> handled: bool {
@@ -380,14 +148,6 @@ handle_request :: (client: *Client) -> handled: bool {
     return true;
 }
 
-process_keep_alive :: () {
-    now := current_time_consensus();
-
-    for * context.clients {
-        if it.keep_alive_expiration < now  close_client(it);
-    }
-}
-
 bad_request :: (client: *Client) {
     client.response.status = 400;
     client.close_after_send = true;
@@ -430,39 +190,6 @@ send_response :: (client: *Client) {
     client.response.serialized = builder_to_string(*b);
 }
 
-create_sigint_fd :: () -> s32 {
-    mask: sigset_t;
-    sigemptyset(*mask);
-    sigaddset(*mask, SIGINT);
-
-    if sigprocmask(SIG_BLOCK, *mask, null) == -1 {
-        perror("sigprocmask");
-        exit(1);
-    }
-
-    sigint_fd := signalfd(-1, *mask, 0);
-    if sigint_fd == -1 {
-        perror("signalfd");
-        exit(1);
-    }
-
-    return sigint_fd;
-}
-
-add_client :: (socket_fd: Socket) -> *Client {
-    client := array_add(*context.clients);
-    client.socket_fd = socket_fd;
-    return client;
-}
-
-find_client :: (socket_fd: Socket) -> *Client {
-    for * context.clients {
-        if it.socket_fd == socket_fd  return it;
-    }
-
-    return null;
-}
-
 reset :: (client: *Client) {
     if client.response.serialized.data != null  free(client.response.serialized.data);
 
@@ -473,18 +200,17 @@ reset :: (client: *Client) {
     client.response.headers.allocator = temp;
 }
 
-remove_client :: (client: *Client) {
-    for context.clients {
-        if it.socket_fd == client.socket_fd  remove it;
-    }
-}
-
 Header :: struct {
     key:   string;
     value: string;
 }
 
 Client :: struct {
+    #if OS == .WINDOWS {
+        overlapped: Windows.OVERLAPPED;
+        operation: enum { RECV; SEND; }
+    }
+
     socket_fd: Socket;
 
     ssl: *SSL;
@@ -507,6 +233,10 @@ Request :: struct {
 
     body: string; // View into `raw`.
 
+    #if OS == .WINDOWS {
+        buffer: WSABUF;
+    }
+
     raw: [MAX_REQUEST_SIZE] u8;
     raw_count: int;
 }
@@ -518,8 +248,21 @@ Response :: struct {
 
     body: string; // Allocate with temporary storage!
 
+    #if OS == .WINDOWS {
+        buffer: WSABUF;
+    }
+
     serialized: string; // :Free-able
     bytes_sent: int;
+}
+
+fatal :: (message: string) {
+    error := get_error_value();
+    error_string := get_error_string(error);
+
+    log("% :: [%] %\n", message, error, error_string);
+
+    exit(1);
 }
 
 // Initial keep alive time set when a connection is accepted.
@@ -532,7 +275,7 @@ DEBUG_MEMORY   :: false;
 
 #add_context clients: [..] Client;
 #add_context ssl_ctx: *SSL_CTX;
-#add_context is_tls: bool;
+#add_context tls: bool;
 
 #import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
 #import "Socket";
@@ -540,13 +283,32 @@ DEBUG_MEMORY   :: false;
 #import "System";
 #import "Thread";
 
-#load "openssl.jai";
-
 #if OS == .LINUX {
     #import "Linux";
     #import "POSIX";
 
-    #load "platform/linux.jai";
+    #load "openssl.jai";
+    #load "linux.jai";
+} else #if OS == .WINDOWS {
+    // We don't have TLS on Windows yet...
+
+    SSL :: struct {};
+    SSL_CTX :: struct {};
+    SSL_CTX_free :: (ctx: *SSL_CTX) {}
+    SSL_new :: (ctx: *SSL_CTX) -> *SSL { return null; }
+    SSL_accept :: (ssl: *SSL) -> s32 { return 0; }
+    SSL_read :: (ssl: *SSL, buffer: *u8, buffer_size: s32) -> s32 { return 0; }
+    SSL_write :: (ssl: *SSL, buffer: *u8, buffer_size: s32) -> s32 { return 0; }
+    SSL_set_fd :: (ssl: *SSL, fd: s32) -> s32 { return 0; }
+    SSL_get_error :: (ssl: *SSL, code: s32) -> s32 { return 0; }
+    SSL_ERROR_WANT_READ :: 2;
+    SSL_ERROR_WANT_WRITE :: 3;
+    create_context :: () -> *SSL_CTX { return null; }
+    configure_context :: (ctx: *SSL_CTX, certificate_file: string, privatekey_file: string) {}
+
+    Windows :: #import "Windows";
+
+    #load "windows.jai";
 } else {
     assert(false, "Only Linux is supported");
 }

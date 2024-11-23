@@ -1,0 +1,314 @@
+platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
+    socket_init();
+
+    signal(SIGPIPE, SIG_IGN);
+
+    #if !MULTITHREADING {
+        arguments: Worker_Arguments;
+        arguments.port = port;
+        arguments.tls = tls;
+        arguments.certificate_file = certificate_file;
+        arguments.privatekey_file = privatekey_file;
+
+        thread: Thread;
+        thread.data = *arguments;
+
+        worker(*thread);
+    } else {
+        num_cpus := get_number_of_processors() / 2;
+        num_threads := max(num_cpus, 1);
+
+        arguments := New(Worker_Arguments);
+        arguments.port = port;
+        arguments.tls = tls;
+        arguments.certificate_file = certificate_file;
+        arguments.privatekey_file = privatekey_file;
+
+        log("Starting % worker threads.\n", num_threads);
+
+        threads := NewArray(num_threads, Thread);
+
+        for 0..num_threads - 1 {
+            thread := *threads[it];
+            thread.data = arguments;
+
+            thread_init(thread, worker);
+            thread_start(thread);
+        }
+    }
+}
+
+Worker_Arguments :: struct {
+    port: u16;
+
+    tls:              bool;
+    certificate_file: string;
+    privatekey_file:  string;
+}
+
+worker :: (thread: *Thread) -> s64 {
+    arguments := cast(*Worker_Arguments) thread.data;
+
+    context.tls = arguments.tls;
+
+    socket_fd := setup_socket(arguments.port);
+
+    if context.tls {
+        context.ssl_ctx = create_context();
+        configure_context(context.ssl_ctx, arguments.certificate_file, arguments.privatekey_file);
+    }
+
+    context.epoll_fd = epoll_create1(0);
+    if context.epoll_fd == -1 {
+        fatal("epoll_create");
+    }
+
+    epoll_add(EPOLLIN | EPOLLET, socket_fd);
+
+    #if !MULTITHREADING {
+        sigint_fd := create_sigint_fd();
+        epoll_add(EPOLLIN | EPOLLET, sigint_fd);
+    }
+
+    events: [1024] epoll_event;
+    quit := false;
+
+    while !quit {
+        nfds := epoll_wait(context.epoll_fd, events.data, events.count, -1);
+        if nfds == -1 {
+            fatal("epoll_wait");
+        }
+
+        for 0..nfds - 1 {
+            ev := events[it];
+
+            #if !MULTITHREADING {
+                if ev.data.fd == sigint_fd {
+                    quit = true;
+                    break;
+                }
+            }
+
+            if ev.data.fd == socket_fd {
+                accept_clients(socket_fd);
+            } else if ev.events & EPOLLIN {
+                read_from_client(ev.data.fd);
+            } else if ev.events & EPOLLOUT {
+                write_to_client(ev.data.fd);
+            }
+        }
+
+        process_keep_alive();
+
+        reset_temporary_storage();
+    }
+
+    return 0;
+}
+
+accept_clients :: (socket_fd: Socket) {
+    while true {
+        client_socket_fd := accept(socket_fd);
+        if client_socket_fd == INVALID_SOCKET {
+            error := get_last_socket_error();
+            if error == SOCKET_WOULDBLOCK  break;
+
+            log("Error: [%] when accepting a client.\n", get_error_string(error));
+
+            continue;
+        }
+
+        set_blocking(client_socket_fd, false);
+
+        client := add_client(client_socket_fd);
+        client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
+
+        if context.tls {
+            ssl := SSL_new(context.ssl_ctx);
+            SSL_set_fd(ssl, xx client_socket_fd);
+
+            result := SSL_accept(ssl);
+
+            if result <= 0 {
+                error := SSL_get_error(ssl, result);
+                if error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE {
+                    fatal("SSL_accept");
+                }
+            }
+
+            client.ssl = ssl;
+        }
+
+        epoll_add(EPOLLIN | EPOLLET, client_socket_fd);
+    }
+}
+
+tls_read :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
+    if context.tls {
+        return SSL_read(client.ssl, buffer, xx buffer_size);
+    } else {
+        return recv(client.socket_fd, buffer, xx buffer_size, 0);
+    }
+}
+
+read_from_client :: (socket_fd: Socket) {
+    client := find_client(socket_fd);
+    assert(client != null);
+
+    while true {
+        offset := client.request.raw.data + client.request.raw_count;
+        max    := client.request.raw.count - client.request.raw_count;
+
+        bytes_read := tls_read(client, offset, xx max);
+        if bytes_read == -1 {
+            error := get_last_socket_error();
+            if error == SOCKET_WOULDBLOCK break;
+
+            log("Error: [%] when reading from a client.\n", get_error_string(error));
+            close_client(client);
+
+            break;
+        }
+
+        if bytes_read == 0 {
+            close_client(client);
+            break;
+        }
+
+        client.request.raw_count += bytes_read;
+
+        handled := handle_request(client);
+        if handled {
+            client.requests_handled += 1;
+            if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
+
+            epoll_mod(EPOLLOUT | EPOLLET, socket_fd);
+
+            break;
+        }
+
+        if client.request.raw_count == MAX_REQUEST_SIZE {
+            log("Error: client sent to much data.\n");
+            close_client(client);
+            break;
+        }
+    }
+}
+
+tls_write :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
+    if context.tls {
+        return SSL_write(client.ssl, buffer, xx buffer_size);
+    } else {
+        return send(client.socket_fd, buffer, xx buffer_size, 0);
+    }
+}
+
+write_to_client :: (socket_fd: Socket) {
+    client := find_client(socket_fd);
+    assert(client != null);
+
+    if client.response.serialized.count - client.response.bytes_sent == 0 {
+        if client.close_after_send {
+            close_client(client);
+            return;
+        }
+    }
+
+    while client.response.serialized.count - client.response.bytes_sent > 0 {
+        offset := client.response.serialized.data + client.response.bytes_sent;
+        max    := client.response.serialized.count - client.response.bytes_sent;
+
+        bytes_sent := tls_write(client, offset, xx max);
+        if bytes_sent == -1 {
+            error := get_last_socket_error();
+            if error == SOCKET_WOULDBLOCK  break;
+
+            log("Error: [%] when sending to a client.\n", get_error_string(error));
+            close_client(client);
+
+            break;
+        }
+
+        client.response.bytes_sent += bytes_sent;
+    }
+
+    if client.response.serialized.count - client.response.bytes_sent == 0 {
+        reset(client);
+        if !client.close_after_send  epoll_mod(EPOLLIN | EPOLLET, socket_fd);
+    }
+}
+
+epoll_add :: (events: u32, fd: s32) {
+    ev: epoll_event;
+    ev.events = events;
+    ev.data.fd = fd;
+
+    if epoll_ctl(context.epoll_fd, .ADD, fd, *ev) == -1 {
+        fatal("epoll_ctl ");
+    }
+}
+
+epoll_mod :: (events: u32,  fd: s32) {
+    ev: epoll_event;
+    ev.events = events;
+    ev.data.fd = fd;
+
+    if epoll_ctl(context.epoll_fd, .MOD, fd, *ev) == -1 {
+        fatal("epoll_ctl");
+    }
+}
+
+create_sigint_fd :: () -> s32 {
+    mask: sigset_t;
+    sigemptyset(*mask);
+    sigaddset(*mask, SIGINT);
+
+    if sigprocmask(SIG_BLOCK, *mask, null) == -1 {
+        fatal("sigprocmask");
+    }
+
+    sigint_fd := signalfd(-1, *mask, 0);
+    if sigint_fd == -1 {
+        fatal("signalfd");
+    }
+
+    return sigint_fd;
+}
+
+close_client :: (client: *Client) {
+    socket_fd := client.socket_fd;
+
+    reset(client);
+    remove_client(client);
+    close_and_reset(*socket_fd);
+}
+
+process_keep_alive :: () {
+    now := current_time_consensus();
+
+    for * context.clients {
+        if it.keep_alive_expiration < now  close_client(it);
+    }
+}
+
+add_client :: (socket_fd: Socket) -> *Client {
+    client := array_add(*context.clients);
+    client.socket_fd = socket_fd;
+    return client;
+}
+
+find_client :: (socket_fd: Socket) -> *Client {
+    for * context.clients {
+        if it.socket_fd == socket_fd  return it;
+    }
+
+    return null;
+}
+
+remove_client :: (client: *Client) {
+    for context.clients {
+        if it.socket_fd == client.socket_fd  remove it;
+    }
+}
+
+#add_context epoll_fd: s32;
