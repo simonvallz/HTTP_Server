@@ -33,6 +33,8 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
         client.request.buffer.buf = client.request.raw.data;
         client.request.buffer.len = client.request.raw.count;
 
+        set_blocking(client_socket_fd, false);
+
         Windows.CreateIoCompletionPort(xx client_socket_fd, completion_port, client_socket_fd, 0);
 
         error := read_from_client(client);
