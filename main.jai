@@ -89,8 +89,6 @@ worker :: (thread: *Thread) -> s64 {
 
     context.is_tls = arguments.tls;
 
-    signal(SIGPIPE, SIG_IGN);
-
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
     if socket_fd == INVALID_SOCKET {
         perror("socket");
@@ -120,52 +118,7 @@ worker :: (thread: *Thread) -> s64 {
         configure_context(context.ssl_ctx, arguments.certificate_file, arguments.privatekey_file);
     }
 
-    context.epoll_fd = epoll_create1(0);
-    if context.epoll_fd == -1  {
-        perror("epoll_create");
-        exit(1);
-    }
-
-    epoll_add(EPOLLIN | EPOLLET, socket_fd);
-
-    #if !MULTITHREADING {
-        sigint_fd := create_sigint_fd();
-        epoll_add(EPOLLIN | EPOLLET, sigint_fd);
-    }
-
-    events: [1024] epoll_event;
-    quit := false;
-
-    while !quit {
-        nfds := epoll_wait(context.epoll_fd, events.data, events.count, -1);
-        if nfds == -1 {
-            perror("epoll_wait");
-            exit(1);
-        }
-
-        for 0..nfds - 1 {
-            ev := events[it];
-
-            #if !MULTITHREADING {
-                if ev.data.fd == sigint_fd {
-                    quit = true;
-                    break;
-                }
-            }
-
-            if ev.data.fd == socket_fd {
-                accept_clients(socket_fd);
-            } else if ev.events & EPOLLIN {
-                read_from_client(ev.data.fd);
-            } else if ev.events & EPOLLOUT {
-                write_to_client(ev.data.fd);
-            }
-        }
-
-        process_keep_alive();
-
-        reset_temporary_storage();
-    }
+    platform_main_loop(socket_fd);
 
     if context.is_tls {
         SSL_CTX_free(context.ssl_ctx);
@@ -179,7 +132,7 @@ accept_clients :: (socket_fd: Socket) {
         client_socket_fd := accept(socket_fd);
         if client_socket_fd == -1 {
             error := get_last_socket_error();
-            if error == EAGAIN || error == EWOULDBLOCK  break;
+            if error == SOCKET_WOULDBLOCK  break;
 
             log("Error: [%] when accepting a client.\n", get_error_string(error));
 
@@ -208,7 +161,7 @@ accept_clients :: (socket_fd: Socket) {
             client.ssl = ssl;
         }
 
-        epoll_add(EPOLLIN | EPOLLET, client_socket_fd);
+        platform_init_ready_for_read(client_socket_fd);
     }
 }
 
@@ -231,7 +184,7 @@ read_from_client :: (socket_fd: Socket) {
         bytes_read := tls_read(client, offset, xx max);
         if bytes_read == -1 {
             error := get_last_socket_error();
-            if error == EAGAIN || error == EWOULDBLOCK break;
+            if error == SOCKET_WOULDBLOCK break;
 
             log("Error: [%] when reading from a client.\n", get_error_string(error));
             close_client(client);
@@ -251,7 +204,7 @@ read_from_client :: (socket_fd: Socket) {
             client.requests_handled += 1;
             if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
 
-            epoll_mod(EPOLLOUT | EPOLLET, socket_fd);
+            platform_ready_for_write(socket_fd);
 
             break;
         }
@@ -290,7 +243,7 @@ write_to_client :: (socket_fd: Socket) {
         bytes_sent := tls_write(client, offset, xx max);
         if bytes_sent == -1 {
             error := get_last_socket_error();
-            if error == EAGAIN || error == EWOULDBLOCK  break;
+            if error == SOCKET_WOULDBLOCK  break;
 
             log("Error: [%] when sending to a client.\n", get_error_string(error));
             close_client(client);
@@ -303,7 +256,7 @@ write_to_client :: (socket_fd: Socket) {
 
     if client.response.serialized.count - client.response.bytes_sent == 0 {
         reset(client);
-        if !client.close_after_send  epoll_mod(EPOLLIN | EPOLLET, socket_fd);
+        if !client.close_after_send  platform_ready_for_read(socket_fd);
     }
 }
 
@@ -496,28 +449,6 @@ create_sigint_fd :: () -> s32 {
     return sigint_fd;
 }
 
-epoll_add :: (events: u32, fd: s32) {
-    ev: epoll_event;
-    ev.events = events;
-    ev.data.fd = fd;
-
-    if epoll_ctl(context.epoll_fd, .ADD, fd, *ev) == -1 {
-        perror("epoll_ctl");
-        exit(1);
-    }
-}
-
-epoll_mod :: (events: u32,  fd: s32) {
-    ev: epoll_event;
-    ev.events = events;
-    ev.data.fd = fd;
-
-    if epoll_ctl(context.epoll_fd, .MOD, fd, *ev) == -1 {
-        perror("epoll_ctl");
-        exit(1);
-    }
-}
-
 add_client :: (socket_fd: Socket) -> *Client {
     client := array_add(*context.clients);
     client.socket_fd = socket_fd;
@@ -600,16 +531,22 @@ MULTITHREADING :: false;
 DEBUG_MEMORY   :: false;
 
 #add_context clients: [..] Client;
-#add_context epoll_fd: s32;
 #add_context ssl_ctx: *SSL_CTX;
 #add_context is_tls: bool;
 
 #import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
-#import "Linux";
-#import "POSIX";
 #import "Socket";
 #import "String";
 #import "System";
 #import "Thread";
 
 #load "openssl.jai";
+
+#if OS == .LINUX {
+    #import "Linux";
+    #import "POSIX";
+
+    #load "platform/linux.jai";
+} else {
+    assert(false, "Only Linux is supported");
+}
