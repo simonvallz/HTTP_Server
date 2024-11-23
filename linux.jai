@@ -311,4 +311,5 @@ remove_client :: (client: *Client) {
     }
 }
 
+#add_context ssl_ctx: *SSL_CTX;
 #add_context epoll_fd: s32;

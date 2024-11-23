@@ -274,7 +274,8 @@ MULTITHREADING :: false;
 DEBUG_MEMORY   :: false;
 
 #add_context clients: [..] Client;
-#add_context ssl_ctx: *SSL_CTX;
+
+// TODO: I want to be able to build and run the server without linking with libssl.
 #add_context tls: bool;
 
 #import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
@@ -293,18 +294,6 @@ DEBUG_MEMORY   :: false;
     // We don't have TLS on Windows yet...
 
     SSL :: struct {};
-    SSL_CTX :: struct {};
-    SSL_CTX_free :: (ctx: *SSL_CTX) {}
-    SSL_new :: (ctx: *SSL_CTX) -> *SSL { return null; }
-    SSL_accept :: (ssl: *SSL) -> s32 { return 0; }
-    SSL_read :: (ssl: *SSL, buffer: *u8, buffer_size: s32) -> s32 { return 0; }
-    SSL_write :: (ssl: *SSL, buffer: *u8, buffer_size: s32) -> s32 { return 0; }
-    SSL_set_fd :: (ssl: *SSL, fd: s32) -> s32 { return 0; }
-    SSL_get_error :: (ssl: *SSL, code: s32) -> s32 { return 0; }
-    SSL_ERROR_WANT_READ :: 2;
-    SSL_ERROR_WANT_WRITE :: 3;
-    create_context :: () -> *SSL_CTX { return null; }
-    configure_context :: (ctx: *SSL_CTX, certificate_file: string, privatekey_file: string) {}
 
     Windows :: #import "Windows";
 
