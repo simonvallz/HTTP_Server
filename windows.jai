@@ -43,6 +43,8 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
             free(client);
             continue;
         }
+
+        reset_temporary_storage();
     }
 
     Windows.CloseHandle(completion_port);
@@ -101,6 +103,8 @@ iocp_worker :: (thread: *Thread) -> s64 {
                     continue;
                 }
         }
+
+        reset_temporary_storage();
     }
 
     return 0;
