@@ -112,7 +112,7 @@ read_from_client :: (client: *Client) -> error:  bool {
     if result == SOCKET_ERROR {
         error := get_last_socket_error();
 
-        return error != Windows.ERROR_IO_PENDING;
+        return error != SOCKET_WOULDBLOCK;
     }
 
     return false;
@@ -124,7 +124,7 @@ write_to_client :: (client: *Client) -> error: bool {
     if send_result == SOCKET_ERROR {
         error := get_last_socket_error();
 
-        return error != Windows.ERROR_IO_PENDING;
+        return error != SOCKET_WOULDBLOCK;
     }
 
     return false;
