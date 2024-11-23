@@ -1,5 +1,5 @@
 main :: () {
-    http_server();
+    http_server(8080);
 
     #if MULTITHREADING {
         while true  sleep_milliseconds(60_000);
@@ -10,26 +10,85 @@ main :: () {
     }
 }
 
-http_server :: () {
+http_server :: (port: u16) {
     #if !MULTITHREADING {
         thread: Thread;
+
+        arguments: Worker_Arguments;
+        arguments.port = port;
+
+        thread.data = *arguments;
+
         worker(*thread);
     } else {
         num_cpus := get_number_of_processors() / 2;
         num_threads := max(num_cpus, 1);
+
         threads := NewArray(num_threads, Thread);
+
+        arguments := New(Worker_Arguments);
+        arguments.port = port;
 
         log("Starting % worker threads.\n", num_threads);
 
         for 0..num_threads - 1 {
             thread := *threads[it];
+            thread.data = arguments;
             thread_init(thread, worker);
             thread_start(thread);
         }
     }
 }
 
+http_server_tls :: (port: u16, certificate_file: string, privatekey_file: string) {
+    #if !MULTITHREADING {
+        thread: Thread;
+
+        arguments: Worker_Arguments;
+        arguments.port = port;
+        arguments.tls = true;
+        arguments.certificate_file = certificate_file;
+        arguments.privatekey_file = privatekey_file;
+
+        thread.data = *arguments;
+
+        worker(*thread);
+    } else {
+        num_cpus := get_number_of_processors() / 2;
+        num_threads := max(num_cpus, 1);
+
+        threads := NewArray(num_threads, Thread);
+
+        arguments := New(Worker_Arguments);
+        arguments.port = port;
+        arguments.tls = true;
+        arguments.certificate_file = certificate_file;
+        arguments.privatekey_file = privatekey_file;
+
+        log("Starting % worker threads.\n", num_threads);
+
+        for 0..num_threads - 1 {
+            thread := *threads[it];
+            thread.data = arguments;
+
+            thread_init(thread, worker);
+            thread_start(thread);
+        }
+    }
+}
+
+Worker_Arguments :: struct {
+    port: u16;
+    tls: bool;
+    certificate_file: string;
+    privatekey_file: string;
+}
+
 worker :: (thread: *Thread) -> s64 {
+    arguments := cast(*Worker_Arguments) thread.data;
+
+    context.is_tls = arguments.tls;
+
     signal(SIGPIPE, SIG_IGN);
 
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
@@ -44,7 +103,7 @@ worker :: (thread: *Thread) -> s64 {
         exit(1);
     }
 
-    if bind(socket_fd, INADDR_ANY, 8080) != 0 {
+    if bind(socket_fd, INADDR_ANY, arguments.port) != 0 {
         perror("bind");
         exit(1);
     }
@@ -55,6 +114,11 @@ worker :: (thread: *Thread) -> s64 {
     }
 
     set_blocking(socket_fd, false);
+
+    if context.is_tls {
+        context.ssl_ctx = create_context();
+        configure_context(context.ssl_ctx, arguments.certificate_file, arguments.privatekey_file);
+    }
 
     context.epoll_fd = epoll_create1(0);
     if context.epoll_fd == -1  {
@@ -103,6 +167,10 @@ worker :: (thread: *Thread) -> s64 {
         reset_temporary_storage();
     }
 
+    if context.is_tls {
+        SSL_CTX_free(context.ssl_ctx);
+    }
+
     return 0;
 }
 
@@ -123,7 +191,32 @@ accept_clients :: (socket_fd: Socket) {
         client := add_client(client_socket_fd);
         client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
 
+        if context.is_tls {
+            ssl := SSL_new(context.ssl_ctx);
+            SSL_set_fd(ssl, client_socket_fd);
+
+            result := SSL_accept(ssl);
+
+            if result <= 0 {
+                error := SSL_get_error(ssl, result);
+                if error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE {
+                    perror("SSL_accept");
+                    exit(1);
+                }
+            }
+
+            client.ssl = ssl;
+        }
+
         epoll_add(EPOLLIN | EPOLLET, client_socket_fd);
+    }
+}
+
+tls_read :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
+    if context.is_tls {
+        return SSL_read(client.ssl, buffer, xx buffer_size);
+    } else {
+        return read(client.socket_fd, buffer, buffer_size);
     }
 }
 
@@ -135,19 +228,19 @@ read_from_client :: (socket_fd: Socket) {
         offset := client.request.raw.data + client.request.raw_count;
         max    := client.request.raw.count - client.request.raw_count;
 
-        bytes_read := recv(socket_fd, offset, xx max, 0);
+        bytes_read := tls_read(client, offset, xx max);
         if bytes_read == -1 {
             error := get_last_socket_error();
             if error == EAGAIN || error == EWOULDBLOCK break;
 
             log("Error: [%] when reading from a client.\n", get_error_string(error));
-            close_client(socket_fd);
+            close_client(client);
 
             break;
         }
 
         if bytes_read == 0 {
-            close_client(socket_fd);
+            close_client(client);
             break;
         }
 
@@ -165,9 +258,17 @@ read_from_client :: (socket_fd: Socket) {
 
         if client.request.raw_count == MAX_REQUEST_SIZE {
             log("Error: client sent to much data.\n");
-            close_client(socket_fd);
+            close_client(client);
             break;
         }
+    }
+}
+
+tls_write :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
+    if context.is_tls {
+        return SSL_write(client.ssl, buffer, xx buffer_size);
+    } else {
+        return write(client.socket_fd, buffer, buffer_size);
     }
 }
 
@@ -177,7 +278,7 @@ write_to_client :: (socket_fd: Socket) {
 
     if client.response.serialized.count - client.response.bytes_sent == 0 {
         if client.close_after_send {
-            close_client(socket_fd);
+            close_client(client);
             return;
         }
     }
@@ -186,13 +287,13 @@ write_to_client :: (socket_fd: Socket) {
         offset := client.response.serialized.data + client.response.bytes_sent;
         max    := client.response.serialized.count - client.response.bytes_sent;
 
-        bytes_sent := send(socket_fd, offset, xx max, 0);
+        bytes_sent := tls_write(client, offset, xx max);
         if bytes_sent == -1 {
             error := get_last_socket_error();
             if error == EAGAIN || error == EWOULDBLOCK  break;
 
             log("Error: [%] when sending to a client.\n", get_error_string(error));
-            close_client(socket_fd);
+            close_client(client);
 
             break;
         }
@@ -201,14 +302,16 @@ write_to_client :: (socket_fd: Socket) {
     }
 
     if client.response.serialized.count - client.response.bytes_sent == 0 {
-        reset(socket_fd);
+        reset(client);
         if !client.close_after_send  epoll_mod(EPOLLIN | EPOLLET, socket_fd);
     }
 }
 
-close_client :: (socket_fd: Socket) {
-    reset(socket_fd);
-    remove_client(socket_fd);
+close_client :: (client: *Client) {
+    socket_fd := client.socket_fd;
+
+    reset(client);
+    remove_client(client);
     close_and_reset(*socket_fd);
 }
 
@@ -327,8 +430,8 @@ handle_request :: (client: *Client) -> handled: bool {
 process_keep_alive :: () {
     now := current_time_consensus();
 
-    for context.clients {
-        if it.keep_alive_expiration < now  close_client(it.socket_fd);
+    for * context.clients {
+        if it.keep_alive_expiration < now  close_client(it);
     }
 }
 
@@ -429,25 +532,19 @@ find_client :: (socket_fd: Socket) -> *Client {
     return null;
 }
 
-reset :: (socket_fd: Socket) {
-    for * context.clients {
-        if it.socket_fd == socket_fd {
-            if it.response.serialized.data != null  free(it.response.serialized.data);
+reset :: (client: *Client) {
+    if client.response.serialized.data != null  free(client.response.serialized.data);
 
-            memset(*it.request, 0, size_of(type_of(it.request)));
-            memset(*it.response, 0, size_of(type_of(it.response)));
+    memset(*client.request, 0, size_of(type_of(client.request)));
+    memset(*client.response, 0, size_of(type_of(client.response)));
 
-            it.request.headers.allocator = temp;
-            it.response.headers.allocator = temp;
-
-            break;
-        }
-    }
+    client.request.headers.allocator = temp;
+    client.response.headers.allocator = temp;
 }
 
-remove_client :: (socket_fd: Socket) {
+remove_client :: (client: *Client) {
     for context.clients {
-        if it.socket_fd == socket_fd  remove it;
+        if it.socket_fd == client.socket_fd  remove it;
     }
 }
 
@@ -458,6 +555,8 @@ Header :: struct {
 
 Client :: struct {
     socket_fd: Socket;
+
+    ssl: *SSL;
 
     request:  Request;
     response: Response;
@@ -502,6 +601,8 @@ DEBUG_MEMORY   :: false;
 
 #add_context clients: [..] Client;
 #add_context epoll_fd: s32;
+#add_context ssl_ctx: *SSL_CTX;
+#add_context is_tls: bool;
 
 #import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
 #import "Linux";
@@ -510,3 +611,5 @@ DEBUG_MEMORY   :: false;
 #import "String";
 #import "System";
 #import "Thread";
+
+#load "openssl.jai";
