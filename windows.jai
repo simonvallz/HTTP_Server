@@ -1,11 +1,9 @@
 // TODO:
 // - TLS support.
-// - Multithreading
 // - Gracefull shutdown with Ctrl-C when not multithreading.
 
 platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
     assert(!tls, "TLS is not supported on Windows yet.");
-    #assert(!MULTITHREADING);
 
     socket_init();
 
@@ -16,9 +14,17 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
         fatal("CreateIoCompletionPort");
     }
 
-    thread: Thread;
-    thread_init(*thread, iocp_worker);
-    thread_start(*thread);
+    num_cpus := get_number_of_processors() / 2;
+    num_threads := max(num_cpus, 1);
+    threads := NewArray(num_threads, Thread);
+    defer free(threads.data);
+
+    log("Starting % worker threads.\n", num_threads);
+
+    for * threads {
+        thread_init(it, iocp_worker);
+        thread_start(it);
+    }
 
     quit := false;
 
@@ -57,9 +63,7 @@ iocp_worker :: (thread: *Thread) -> s64 {
         overlapped: *Windows.OVERLAPPED;
 
         result := Windows.GetQueuedCompletionStatus(completion_port, *bytes_transfered, *client_socket_fd, *overlapped, Windows.INFINITE);
-        if !result {
-            fatal("GetQueuedCompletionStatus");
-        }
+        if !result  continue;
 
         client := cast(*Client) overlapped;
 
@@ -116,7 +120,7 @@ read_from_client :: (client: *Client) -> error:  bool {
     if result == SOCKET_ERROR {
         error := get_last_socket_error();
 
-        return error != SOCKET_WOULDBLOCK;
+        return error != Windows.ERROR_IO_PENDING;
     }
 
     return false;
@@ -128,7 +132,7 @@ write_to_client :: (client: *Client) -> error: bool {
     if send_result == SOCKET_ERROR {
         error := get_last_socket_error();
 
-        return error != SOCKET_WOULDBLOCK;
+        return error != Windows.ERROR_IO_PENDING;
     }
 
     return false;
