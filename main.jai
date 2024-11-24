@@ -285,8 +285,8 @@ DEBUG_MEMORY   :: false;
 #import "Thread";
 
 #if OS == .LINUX {
-    #import "Linux";
-    #import "POSIX";
+    Linux :: #import "Linux";
+    POSIX :: #import "POSIX";
 
     #load "openssl.jai";
     #load "linux.jai";

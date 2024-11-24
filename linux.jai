@@ -1,7 +1,7 @@
 platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
     socket_init();
 
-    signal(SIGPIPE, SIG_IGN);
+    POSIX.signal(POSIX.SIGPIPE, POSIX.SIG_IGN);
 
     #if !MULTITHREADING {
         arguments: Worker_Arguments;
@@ -58,23 +58,23 @@ worker :: (thread: *Thread) -> s64 {
         configure_context(context.ssl_ctx, arguments.certificate_file, arguments.privatekey_file);
     }
 
-    context.epoll_fd = epoll_create1(0);
+    context.epoll_fd = Linux.epoll_create1(0);
     if context.epoll_fd == -1 {
         fatal("epoll_create");
     }
 
-    epoll_add(EPOLLIN | EPOLLET, socket_fd);
+    epoll_add(Linux.EPOLLIN | Linux.EPOLLET, socket_fd);
 
     #if !MULTITHREADING {
         sigint_fd := create_sigint_fd();
-        epoll_add(EPOLLIN | EPOLLET, sigint_fd);
+        epoll_add(Linux.EPOLLIN | Linux.EPOLLET, sigint_fd);
     }
 
-    events: [1024] epoll_event;
+    events: [1024] Linux.epoll_event;
     quit := false;
 
     while !quit {
-        nfds := epoll_wait(context.epoll_fd, events.data, events.count, -1);
+        nfds := Linux.epoll_wait(context.epoll_fd, events.data, events.count, -1);
         if nfds == -1 {
             fatal("epoll_wait");
         }
@@ -91,9 +91,9 @@ worker :: (thread: *Thread) -> s64 {
 
             if ev.data.fd == socket_fd {
                 accept_clients(socket_fd);
-            } else if ev.events & EPOLLIN {
+            } else if ev.events & Linux.EPOLLIN {
                 read_from_client(ev.data.fd);
-            } else if ev.events & EPOLLOUT {
+            } else if ev.events & Linux.EPOLLOUT {
                 write_to_client(ev.data.fd);
             }
         }
@@ -139,7 +139,7 @@ accept_clients :: (socket_fd: Socket) {
             client.ssl = ssl;
         }
 
-        epoll_add(EPOLLIN | EPOLLET, client_socket_fd);
+        epoll_add(Linux.EPOLLIN | Linux.EPOLLET, client_socket_fd);
     }
 }
 
@@ -182,7 +182,7 @@ read_from_client :: (socket_fd: Socket) {
             client.requests_handled += 1;
             if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
 
-            epoll_mod(EPOLLOUT | EPOLLET, socket_fd);
+            epoll_mod(Linux.EPOLLOUT | Linux.EPOLLET, socket_fd);
 
             break;
         }
@@ -234,40 +234,40 @@ write_to_client :: (socket_fd: Socket) {
 
     if client.response.serialized.count - client.response.bytes_sent == 0 {
         reset(client);
-        if !client.close_after_send  epoll_mod(EPOLLIN | EPOLLET, socket_fd);
+        if !client.close_after_send  epoll_mod(Linux.EPOLLIN | Linux.EPOLLET, socket_fd);
     }
 }
 
 epoll_add :: (events: u32, fd: s32) {
-    ev: epoll_event;
+    ev: Linux.epoll_event;
     ev.events = events;
     ev.data.fd = fd;
 
-    if epoll_ctl(context.epoll_fd, .ADD, fd, *ev) == -1 {
+    if Linux.epoll_ctl(context.epoll_fd, .ADD, fd, *ev) == -1 {
         fatal("epoll_ctl ");
     }
 }
 
 epoll_mod :: (events: u32,  fd: s32) {
-    ev: epoll_event;
+    ev: Linux.epoll_event;
     ev.events = events;
     ev.data.fd = fd;
 
-    if epoll_ctl(context.epoll_fd, .MOD, fd, *ev) == -1 {
+    if Linux.epoll_ctl(context.epoll_fd, .MOD, fd, *ev) == -1 {
         fatal("epoll_ctl");
     }
 }
 
 create_sigint_fd :: () -> s32 {
-    mask: sigset_t;
-    sigemptyset(*mask);
-    sigaddset(*mask, SIGINT);
+    mask: POSIX.sigset_t;
+    POSIX.sigemptyset(*mask);
+    POSIX.sigaddset(*mask, POSIX.SIGINT);
 
-    if sigprocmask(SIG_BLOCK, *mask, null) == -1 {
+    if POSIX.sigprocmask(POSIX.SIG_BLOCK, *mask, null) == -1 {
         fatal("sigprocmask");
     }
 
-    sigint_fd := signalfd(-1, *mask, 0);
+    sigint_fd := POSIX.signalfd(-1, *mask, 0);
     if sigint_fd == -1 {
         fatal("signalfd");
     }
