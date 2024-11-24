@@ -1,6 +1,5 @@
 // TODO:
 // - TLS support.
-// - Gracefull shutdown with Ctrl-C when not multithreading.
 
 platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
     assert(!tls, "TLS is not supported on Windows yet.");
@@ -26,9 +25,7 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
         thread_start(it);
     }
 
-    quit := false;
-
-    while !quit {
+    while true {
         client_socket_fd := accept(socket_fd);
         if client_socket_fd == INVALID_SOCKET {
             fatal("accept");
