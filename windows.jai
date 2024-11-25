@@ -99,6 +99,8 @@ iocp_worker :: (thread: *Thread) -> s64 {
                 read_from_client(client);
         }
 
+        ref_decrement(client);
+
         reset_temporary_storage();
     }
 
@@ -142,9 +144,7 @@ process_keep_alive :: () {
     for * clients {
         if it.keep_alive_expiration < now {
             it.shutdown = true;
-            atomic_decrement(*it.ref_count);
-            closesocket(it.socket_fd);
-            bucket_array_remove(*clients, it.locator);
+            ref_decrement(it, false);
         }
     }
     unlock(*clients_lock);
@@ -154,14 +154,14 @@ ref_increment :: (client: *Client) {
     atomic_increment(*client.ref_count);
 }
 
-ref_decrement :: (client: *Client) {
+ref_decrement :: (client: *Client, $lock_mutex := true) {
     atomic_decrement(*client.ref_count);
-    if client.ref_count == 0 && client.shutdown {
+    if client.ref_count == 0 {
         closesocket(client.socket_fd);
 
-        lock(*clients_lock);
+        #if lock_mutex  lock(*clients_lock);
         bucket_array_remove(*clients, client.locator);
-        unlock(*clients_lock);
+        #if lock_mutex  unlock(*clients_lock);
     }
 }
 
