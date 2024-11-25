@@ -4,6 +4,8 @@
 platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
     assert(!tls, "TLS is not supported on Windows yet.");
 
+    init(*clients_lock);
+
     socket_init();
 
     socket_fd := setup_socket(port);
@@ -27,12 +29,15 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
 
     while true {
         client_socket_fd := accept(socket_fd);
-        if client_socket_fd == INVALID_SOCKET {
-            fatal("accept");
-        }
+        if client_socket_fd == INVALID_SOCKET  fatal("accept");
 
-        client := New(Client);
+        lock(*clients_lock);
+        client, locator := find_and_occupy_empty_slot(*clients);
+        unlock(*clients_lock);
+
+        client.locator = locator;
         client.socket_fd = client_socket_fd;
+        client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
         client.request.buffer.buf = client.request.raw.data;
         client.request.buffer.len = client.request.raw.count;
 
@@ -40,12 +45,9 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
 
         Windows.CreateIoCompletionPort(xx client_socket_fd, completion_port, client_socket_fd, 0);
 
-        error := read_from_client(client);
-        if error {
-            close_and_reset(*client.socket_fd);
-            free(client);
-            continue;
-        }
+        read_from_client(client);
+
+        process_keep_alive();
 
         reset_temporary_storage();
     }
@@ -59,14 +61,16 @@ iocp_worker :: (thread: *Thread) -> s64 {
         client_socket_fd: Socket;
         overlapped: *Windows.OVERLAPPED;
 
-        result := Windows.GetQueuedCompletionStatus(completion_port, *bytes_transfered, *client_socket_fd, *overlapped, Windows.INFINITE);
-        if !result  continue;
+        success := Windows.GetQueuedCompletionStatus(completion_port, *bytes_transfered, *client_socket_fd, *overlapped, Windows.INFINITE);
 
         client := cast(*Client) overlapped;
 
-        if bytes_transfered == 0 {
-            close_and_reset(*client_socket_fd);
-            free(client);
+        if !success || bytes_transfered == 0 {
+            if client {
+                client.shutdown = true;
+                ref_decrement(client);
+            }
+
             continue;
         }
 
@@ -84,12 +88,7 @@ iocp_worker :: (thread: *Thread) -> s64 {
                 client.response.buffer.buf = client.response.serialized.data;
                 client.response.buffer.len = xx client.response.serialized.count;
 
-                error := write_to_client(client);
-                if error {
-                    close_and_reset(*client.socket_fd);
-                    free(client);
-                    continue;
-                }
+                write_to_client(client);
             case .SEND;
                 reset(client);
                 client.operation = .RECV;
@@ -97,12 +96,7 @@ iocp_worker :: (thread: *Thread) -> s64 {
                 client.request.buffer.buf = client.request.raw.data;
                 client.request.buffer.len = client.request.raw.count;
 
-                error := read_from_client(client);
-                if error {
-                    close_and_reset(*client.socket_fd);
-                    free(client);
-                    continue;
-                }
+                read_from_client(client);
         }
 
         reset_temporary_storage();
@@ -111,28 +105,70 @@ iocp_worker :: (thread: *Thread) -> s64 {
     return 0;
 }
 
-read_from_client :: (client: *Client) -> error:  bool {
+read_from_client :: (client: *Client) {
+    if client.shutdown  return;
+
+    ref_increment(client);
+
     flags: u32;
     result := WSARecv(client.socket_fd, *client.request.buffer, 1, null, *flags, *client.overlapped, null);
     if result == SOCKET_ERROR {
         error := get_last_socket_error();
+        if error == Windows.ERROR_IO_PENDING  return;
 
-        return error != Windows.ERROR_IO_PENDING;
+        ref_decrement(client);
     }
-
-    return false;
 }
 
-write_to_client :: (client: *Client) -> error: bool {
+write_to_client :: (client: *Client) {
+    if client.shutdown  return;
+
+    ref_increment(client);
+
     flags: u32;
     send_result := WSASend(client.socket_fd, *client.response.buffer, 1, null, flags, *client.overlapped, null);
     if send_result == SOCKET_ERROR {
         error := get_last_socket_error();
+        if error == Windows.ERROR_IO_PENDING  return;
 
-        return error != Windows.ERROR_IO_PENDING;
+        ref_decrement(client);
     }
-
-    return false;
 }
 
+process_keep_alive :: () {
+    now := current_time_consensus();
+
+    lock(*clients_lock);
+    for * clients {
+        if it.keep_alive_expiration < now {
+            it.shutdown = true;
+            atomic_decrement(*it.ref_count);
+            closesocket(it.socket_fd);
+            bucket_array_remove(*clients, it.locator);
+        }
+    }
+    unlock(*clients_lock);
+}
+
+ref_increment :: (client: *Client) {
+    atomic_increment(*client.ref_count);
+}
+
+ref_decrement :: (client: *Client) {
+    atomic_decrement(*client.ref_count);
+    if client.ref_count == 0 && client.shutdown {
+        closesocket(client.socket_fd);
+
+        lock(*clients_lock);
+        bucket_array_remove(*clients, client.locator);
+        unlock(*clients_lock);
+    }
+}
+
+clients_lock: Mutex;
+clients: Bucket_Array(Client, 64);
+
 completion_port: Windows.HANDLE;
+
+#import "Atomics";
+#import "Bucket_Array";

@@ -209,6 +209,11 @@ Client :: struct {
     #if OS == .WINDOWS {
         overlapped: Windows.OVERLAPPED;
         operation: enum { RECV; SEND; }
+
+        locator: Bucket_Locator;
+
+        ref_count: u8; // Atomic
+        shutdown: bool;
     }
 
     socket_fd: Socket;
