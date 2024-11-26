@@ -1,3 +1,5 @@
+#scope_module
+
 create_context :: () -> *SSL_CTX {
     method := TLS_server_method();
     ctx := SSL_CTX_new(method);

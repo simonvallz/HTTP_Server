@@ -1,5 +1,4 @@
-// TODO:
-// - TLS support.
+#scope_module
 
 platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
     assert(!tls, "TLS is not supported on Windows yet.");

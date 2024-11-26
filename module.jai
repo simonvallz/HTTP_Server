@@ -1,15 +1,3 @@
-main :: () {
-    http_server(8080);
-
-    #if MULTITHREADING {
-        while true  sleep_milliseconds(60_000);
-    }
-
-    #if DEBUG_MEMORY {
-        report_memory_leaks();
-    }
-}
-
 http_server :: (port: u16) {
     platform_main_loop(port);
 }
@@ -17,6 +5,8 @@ http_server :: (port: u16) {
 http_server_tls :: (port: u16, certificate_file: string, privatekey_file: string) {
     platform_main_loop(port, true, certificate_file, privatekey_file);
 }
+
+#scope_module
 
 setup_socket :: (port: u16) -> Socket {
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
@@ -276,14 +266,13 @@ ACCEPT_KEEP_ALIVE :: #run seconds_to_apollo(60);
 MAX_REQUEST_SIZE :: 65536;
 
 MULTITHREADING :: false;
-DEBUG_MEMORY   :: false;
 
 #add_context clients: [..] Client;
 
 // TODO: I want to be able to build and run the server without linking with libssl.
 #add_context tls: bool;
 
-#import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
+#import "Basic";
 #import "Socket";
 #import "String";
 #import "System";
