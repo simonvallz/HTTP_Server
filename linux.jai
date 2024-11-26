@@ -1,3 +1,5 @@
+#scope_module
+
 platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
     socket_init();
 
