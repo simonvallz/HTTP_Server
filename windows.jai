@@ -1,6 +1,6 @@
 #scope_module
 
-platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
+platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "", request_handler: Request_Handler) {
     assert(!tls, "TLS is not supported on Windows yet.");
 
     init(*clients_lock);
@@ -22,6 +22,8 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
     log("Starting % worker threads.\n", num_threads);
 
     for * threads {
+        it.data = xx request_handler;
+
         thread_init(it, iocp_worker);
         thread_start(it);
     }
@@ -55,6 +57,8 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
 }
 
 iocp_worker :: (thread: *Thread) -> s64 {
+    request_handler := cast(Request_Handler) thread.data;
+
     while true {
         bytes_transfered: Windows.DWORD;
         client_socket_fd: Socket;
@@ -77,7 +81,7 @@ iocp_worker :: (thread: *Thread) -> s64 {
             case .RECV;
                 client.request.raw_count += bytes_transfered;
 
-                handled := handle_request(client);
+                handled := handle_request(client, request_handler);
                 if !handled {
                     read_from_client(client);
                     continue;

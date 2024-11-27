@@ -1,9 +1,56 @@
-http_server :: (port: u16) {
-    platform_main_loop(port);
+http_server :: (port: u16, request_handler: Request_Handler) {
+    platform_main_loop(port, request_handler=request_handler);
 }
 
-http_server_tls :: (port: u16, certificate_file: string, privatekey_file: string) {
-    platform_main_loop(port, true, certificate_file, privatekey_file);
+http_server_tls :: (port: u16, certificate_file: string, privatekey_file: string, request_handler: Request_Handler) {
+    platform_main_loop(port, true, certificate_file, privatekey_file, request_handler);
+}
+
+Request :: struct {
+    url:     string; // View into `raw`.
+    method:  string; // View into `raw`.
+    headers: [..] Header;
+    headers.allocator = temp;
+
+    body: string; // View into `raw`.
+
+    #if OS == .WINDOWS {
+        buffer: WSABUF;
+    }
+
+    raw: [MAX_REQUEST_SIZE] u8;
+    raw_count: int;
+}
+
+Response :: struct {
+    status:       int;
+    headers:      [..] Header;
+    headers.allocator = temp;
+
+    body: string; // Allocate with temporary storage!
+
+    #if OS == .WINDOWS {
+        buffer: WSABUF;
+    }
+
+    serialized: string; // :Free-able
+    bytes_sent: int;
+}
+
+Request_Handler :: #type (request: *Request, response: *Response);
+
+html :: (response: *Response, html: string) {
+    response.status = 200;
+    response.body = html;
+
+    header: Header = ---;
+    header.key = "Content-Type";
+    header.value = "text/html";
+    array_add(*response.headers, header);
+}
+
+not_found :: (response: *Response) {
+    response.status = 404;
 }
 
 #scope_module
@@ -26,7 +73,7 @@ setup_socket :: (port: u16) -> Socket {
     return socket_fd;
 }
 
-handle_request :: (client: *Client) -> handled: bool {
+handle_request :: (client: *Client, request_handler: Request_Handler) -> handled: bool {
     message: string = ---;
     message.data = client.request.raw.data;
     message.count = client.request.raw_count;
@@ -127,13 +174,10 @@ handle_request :: (client: *Client) -> handled: bool {
 
     log("% %\n", client.request.method, client.request.url);
 
-    if client.request.url == "/" {
-        send_html(client, "<html>Hello World!</html>");
-    } else if client.request.url == "/hello" {
-        send_html(client, "<html>Hello from Jai!</html>");
-    } else {
-        not_found(client);
-    }
+    request_handler(*client.request, *client.response);
+
+    if client.response.status == 0  not_found(*client.response);
+    send_response(client);
 
     return true;
 }
@@ -218,37 +262,6 @@ Client :: struct {
     keep_alive_expiration: Apollo_Time;
     max_requests := -1;
     requests_handled: int;
-}
-
-Request :: struct {
-    url:     string; // View into `raw`.
-    method:  string; // View into `raw`.
-    headers: [..] Header;
-    headers.allocator = temp;
-
-    body: string; // View into `raw`.
-
-    #if OS == .WINDOWS {
-        buffer: WSABUF;
-    }
-
-    raw: [MAX_REQUEST_SIZE] u8;
-    raw_count: int;
-}
-
-Response :: struct {
-    status:       int;
-    headers:      [..] Header;
-    headers.allocator = temp;
-
-    body: string; // Allocate with temporary storage!
-
-    #if OS == .WINDOWS {
-        buffer: WSABUF;
-    }
-
-    serialized: string; // :Free-able
-    bytes_sent: int;
 }
 
 fatal :: (message: string) {

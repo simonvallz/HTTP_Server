@@ -1,6 +1,6 @@
 #scope_module
 
-platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "") {
+platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "", request_handler: Request_Handler) {
     socket_init();
 
     POSIX.signal(POSIX.SIGPIPE, POSIX.SIG_IGN);
@@ -11,6 +11,7 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
         arguments.tls = tls;
         arguments.certificate_file = certificate_file;
         arguments.privatekey_file = privatekey_file;
+        arguments.request_handler = request_handler;
 
         thread: Thread;
         thread.data = *arguments;
@@ -25,6 +26,7 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
         arguments.tls = tls;
         arguments.certificate_file = certificate_file;
         arguments.privatekey_file = privatekey_file;
+        arguments.request_handler = request_handler;
 
         log("Starting % worker threads.\n", num_threads);
 
@@ -46,6 +48,8 @@ Worker_Arguments :: struct {
     tls:              bool;
     certificate_file: string;
     privatekey_file:  string;
+
+    request_handler: Request_Handler;
 }
 
 worker :: (thread: *Thread) -> s64 {
@@ -94,7 +98,7 @@ worker :: (thread: *Thread) -> s64 {
             if ev.data.fd == socket_fd {
                 accept_clients(socket_fd);
             } else if ev.events & Linux.EPOLLIN {
-                read_from_client(ev.data.fd);
+                read_from_client(ev.data.fd, arguments.request_handler);
             } else if ev.events & Linux.EPOLLOUT {
                 write_to_client(ev.data.fd);
             }
@@ -153,7 +157,7 @@ tls_read :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
     }
 }
 
-read_from_client :: (socket_fd: Socket) {
+read_from_client :: (socket_fd: Socket, request_handler: Request_Handler) {
     client := find_client(socket_fd);
     assert(client != null);
 
@@ -179,7 +183,7 @@ read_from_client :: (socket_fd: Socket) {
 
         client.request.raw_count += bytes_read;
 
-        handled := handle_request(client);
+        handled := handle_request(client, request_handler);
         if handled {
             client.requests_handled += 1;
             if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
