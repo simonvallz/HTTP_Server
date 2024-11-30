@@ -59,7 +59,7 @@ setup_socket :: (port: u16) -> Socket {
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
     if socket_fd == INVALID_SOCKET  fatal("socket");
 
-    #if OS == .LINUX {
+    #if OS == .LINUX || OS == .MACOS {
         options := 1;
         if setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, *options, size_of(type_of(options))) == -1  fatal("setsockopt");
     }
@@ -305,6 +305,12 @@ MULTITHREADING :: false;
     Windows :: #import "Windows";
 
     #load "windows.jai";
+} else #if OS == .MACOS {
+    // We don't have TLS on macOS yet...
+
+    SSL :: struct {};
+
+    #load "macos.jai";
 } else {
     assert(false, "Only Linux is supported");
 }
