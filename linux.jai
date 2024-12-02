@@ -5,41 +5,28 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
 
     POSIX.signal(POSIX.SIGPIPE, POSIX.SIG_IGN);
 
-    #if !MULTITHREADING {
-        arguments: Worker_Arguments;
-        arguments.port = port;
-        arguments.tls = tls;
-        arguments.certificate_file = certificate_file;
-        arguments.privatekey_file = privatekey_file;
-        arguments.request_handler = request_handler;
+    num_cpus := get_number_of_processors() / 2;
+    num_threads := max(num_cpus - 1, 1);
 
-        thread: Thread;
-        thread.data = *arguments;
+    arguments := New(Worker_Arguments);
+    arguments.port = port;
+    arguments.request_handler = request_handler;
 
-        worker(*thread);
-    } else {
-        num_cpus := get_number_of_processors() / 2;
-        num_threads := max(num_cpus, 1);
+    log("Starting % worker threads.\n", num_threads);
 
-        arguments := New(Worker_Arguments);
-        arguments.port = port;
-        arguments.tls = tls;
-        arguments.certificate_file = certificate_file;
-        arguments.privatekey_file = privatekey_file;
-        arguments.request_handler = request_handler;
+    threads := NewArray(num_threads, Thread);
 
-        log("Starting % worker threads.\n", num_threads);
+    for 0..num_threads - 1 {
+        thread := *threads[it];
+        thread.data = arguments;
 
-        threads := NewArray(num_threads, Thread);
-
-        for 0..num_threads - 1 {
-            thread := *threads[it];
-            thread.data = arguments;
-
-            thread_init(thread, worker);
-            thread_start(thread);
-        }
+        thread_init(thread, worker);
+        thread_start(thread);
     }
+
+    main_thread: Thread;
+    main_thread.data = arguments;
+    worker(*main_thread);
 }
 
 Worker_Arguments :: struct {
@@ -71,11 +58,6 @@ worker :: (thread: *Thread) -> s64 {
 
     epoll_add(Linux.EPOLLIN | Linux.EPOLLET, socket_fd);
 
-    #if !MULTITHREADING {
-        sigint_fd := create_sigint_fd();
-        epoll_add(Linux.EPOLLIN | Linux.EPOLLET, sigint_fd);
-    }
-
     events: [1024] Linux.epoll_event;
     quit := false;
 
@@ -87,13 +69,6 @@ worker :: (thread: *Thread) -> s64 {
 
         for 0..nfds - 1 {
             ev := events[it];
-
-            #if !MULTITHREADING {
-                if ev.data.fd == sigint_fd {
-                    quit = true;
-                    break;
-                }
-            }
 
             if ev.data.fd == socket_fd {
                 accept_clients(socket_fd);
@@ -262,23 +237,6 @@ epoll_mod :: (events: u32,  fd: s32) {
     if Linux.epoll_ctl(context.epoll_fd, .MOD, fd, *ev) == -1 {
         fatal("epoll_ctl");
     }
-}
-
-create_sigint_fd :: () -> s32 {
-    mask: POSIX.sigset_t;
-    POSIX.sigemptyset(*mask);
-    POSIX.sigaddset(*mask, POSIX.SIGINT);
-
-    if POSIX.sigprocmask(POSIX.SIG_BLOCK, *mask, null) == -1 {
-        fatal("sigprocmask");
-    }
-
-    sigint_fd := POSIX.signalfd(-1, *mask, 0);
-    if sigint_fd == -1 {
-        fatal("signalfd");
-    }
-
-    return sigint_fd;
 }
 
 close_client :: (client: *Client) {

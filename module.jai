@@ -278,8 +278,6 @@ ACCEPT_KEEP_ALIVE :: #run seconds_to_apollo(60);
 
 MAX_REQUEST_SIZE :: 65536;
 
-MULTITHREADING :: false;
-
 #add_context clients: [..] Client;
 
 // TODO: I want to be able to build and run the server without linking with libssl.
