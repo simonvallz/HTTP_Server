@@ -1,8 +1,6 @@
 #scope_module
 
-platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "", request_handler: Request_Handler) {
-    assert(!tls, "TLS is not supported on Windows yet.");
-
+platform_main_loop :: (port: u16, request_handler: Request_Handler) {
     init(*clients_lock);
 
     socket_init();

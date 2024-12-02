@@ -1,6 +1,6 @@
 #scope_module
 
-platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "", request_handler: Request_Handler) {
+platform_main_loop :: (port: u16, request_handler: Request_Handler) {
     socket_init();
 
     // Why doesn't this work?
@@ -32,7 +32,6 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
 
 Worker_Arguments :: struct {
     port: u16;
-
     request_handler: Request_Handler;
 }
 

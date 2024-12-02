@@ -2,10 +2,6 @@ http_server :: (port: u16, request_handler: Request_Handler) {
     platform_main_loop(port, request_handler=request_handler);
 }
 
-http_server_tls :: (port: u16, certificate_file: string, privatekey_file: string, request_handler: Request_Handler) {
-    platform_main_loop(port, true, certificate_file, privatekey_file, request_handler);
-}
-
 Request :: struct {
     url:     string; // View into `raw`.
     method:  string; // View into `raw`.
@@ -252,8 +248,6 @@ Client :: struct {
 
     socket_fd: Socket;
 
-    ssl: *SSL;
-
     request:  Request;
     response: Response;
 
@@ -280,9 +274,6 @@ MAX_REQUEST_SIZE :: 65536;
 
 #add_context clients: [..] Client;
 
-// TODO: I want to be able to build and run the server without linking with libssl.
-#add_context tls: bool;
-
 #import "Basic";
 #import "Socket";
 #import "String";
@@ -293,21 +284,12 @@ MAX_REQUEST_SIZE :: 65536;
     Linux :: #import "Linux";
     POSIX :: #import "POSIX";
 
-    #load "openssl.jai";
     #load "linux.jai";
 } else #if OS == .WINDOWS {
-    // We don't have TLS on Windows yet...
-
-    SSL :: struct {};
-
     Windows :: #import "Windows";
 
     #load "windows.jai";
 } else #if OS == .MACOS {
-    // We don't have TLS on macOS yet...
-
-    SSL :: struct {};
-
     #load "macos.jai";
 } else {
     assert(false, "Only Linux is supported");

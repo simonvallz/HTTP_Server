@@ -1,6 +1,6 @@
 #scope_module
 
-platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatekey_file := "", request_handler: Request_Handler) {
+platform_main_loop :: (port: u16, request_handler: Request_Handler) {
     socket_init();
 
     POSIX.signal(POSIX.SIGPIPE, POSIX.SIG_IGN);
@@ -31,25 +31,13 @@ platform_main_loop :: (port: u16, tls := false, certificate_file := "", privatek
 
 Worker_Arguments :: struct {
     port: u16;
-
-    tls:              bool;
-    certificate_file: string;
-    privatekey_file:  string;
-
     request_handler: Request_Handler;
 }
 
 worker :: (thread: *Thread) -> s64 {
     arguments := cast(*Worker_Arguments) thread.data;
 
-    context.tls = arguments.tls;
-
     socket_fd := setup_socket(arguments.port);
-
-    if context.tls {
-        context.ssl_ctx = create_context();
-        configure_context(context.ssl_ctx, arguments.certificate_file, arguments.privatekey_file);
-    }
 
     context.epoll_fd = Linux.epoll_create1(0);
     if context.epoll_fd == -1 {
@@ -104,31 +92,7 @@ accept_clients :: (socket_fd: Socket) {
         client := add_client(client_socket_fd);
         client.keep_alive_expiration = current_time_consensus() + ACCEPT_KEEP_ALIVE;
 
-        if context.tls {
-            ssl := SSL_new(context.ssl_ctx);
-            SSL_set_fd(ssl, xx client_socket_fd);
-
-            result := SSL_accept(ssl);
-
-            if result <= 0 {
-                error := SSL_get_error(ssl, result);
-                if error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE {
-                    fatal("SSL_accept");
-                }
-            }
-
-            client.ssl = ssl;
-        }
-
         epoll_add(Linux.EPOLLIN | Linux.EPOLLET, client_socket_fd);
-    }
-}
-
-tls_read :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
-    if context.tls {
-        return SSL_read(client.ssl, buffer, xx buffer_size);
-    } else {
-        return recv(client.socket_fd, buffer, xx buffer_size, 0);
     }
 }
 
@@ -140,7 +104,7 @@ read_from_client :: (socket_fd: Socket, request_handler: Request_Handler) {
         offset := client.request.raw.data + client.request.raw_count;
         max    := client.request.raw.count - client.request.raw_count;
 
-        bytes_read := tls_read(client, offset, xx max);
+        bytes_read := recv(client.socket_fd, offset, xx max, 0);
         if bytes_read == -1 {
             error := get_last_socket_error();
             if error == SOCKET_WOULDBLOCK break;
@@ -176,14 +140,6 @@ read_from_client :: (socket_fd: Socket, request_handler: Request_Handler) {
     }
 }
 
-tls_write :: (client: *Client, buffer: *u8, buffer_size: u64) -> s64 {
-    if context.tls {
-        return SSL_write(client.ssl, buffer, xx buffer_size);
-    } else {
-        return send(client.socket_fd, buffer, xx buffer_size, 0);
-    }
-}
-
 write_to_client :: (socket_fd: Socket) {
     client := find_client(socket_fd);
     assert(client != null);
@@ -199,7 +155,7 @@ write_to_client :: (socket_fd: Socket) {
         offset := client.response.serialized.data + client.response.bytes_sent;
         max    := client.response.serialized.count - client.response.bytes_sent;
 
-        bytes_sent := tls_write(client, offset, xx max);
+        bytes_sent := send(client.socket_fd, offset, xx max, 0);
         if bytes_sent == -1 {
             error := get_last_socket_error();
             if error == SOCKET_WOULDBLOCK  break;
@@ -275,5 +231,4 @@ remove_client :: (client: *Client) {
     }
 }
 
-#add_context ssl_ctx: *SSL_CTX;
 #add_context epoll_fd: s32;
