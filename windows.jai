@@ -173,3 +173,5 @@ completion_port: Windows.HANDLE;
 
 #import "Atomics";
 #import "Bucket_Array";
+
+Windows :: #import "Windows";

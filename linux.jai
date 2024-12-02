@@ -232,3 +232,6 @@ remove_client :: (client: *Client) {
 }
 
 #add_context epoll_fd: s32;
+
+Linux :: #import "Linux";
+POSIX :: #import "POSIX";

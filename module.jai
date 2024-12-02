@@ -281,16 +281,11 @@ MAX_REQUEST_SIZE :: 65536;
 #import "Thread";
 
 #if OS == .LINUX {
-    Linux :: #import "Linux";
-    POSIX :: #import "POSIX";
-
     #load "linux.jai";
 } else #if OS == .WINDOWS {
-    Windows :: #import "Windows";
-
     #load "windows.jai";
 } else #if OS == .MACOS {
     #load "macos.jai";
 } else {
-    assert(false, "Only Linux is supported");
+    assert(false, "Operating system not supported...");
 }
