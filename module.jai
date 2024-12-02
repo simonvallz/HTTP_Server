@@ -120,46 +120,6 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
         if equal_nocase(key, "Connection") && equal_nocase(value, "close") {
             client.close_after_send = true;
         }
-
-        if equal_nocase(key, "Keep-Alive") {
-            key_values := split(value, ",",, temp);
-
-            for key_values {
-                found, key, value := split_from_left(it, "=");
-                if !found {
-                    bad_request(client);
-                    return true;
-                }
-
-                key = trim(key);
-                value = trim(value);
-
-                if equal_nocase(key, "timeout") {
-                    timeout, success := parse_int(*value);
-                    if !success {
-                        bad_request(client);
-                        return true;
-                    }
-
-                    client.keep_alive_expiration = current_time_consensus() + seconds_to_apollo(timeout);
-                }
-
-                if equal_nocase(key, "max") {
-                    max, success := parse_int(*value);
-                    if !success {
-                        bad_request(client);
-                        return true;
-                    }
-
-                    if max < 1 {
-                        bad_request(client);
-                        return true;
-                    }
-
-                    client.max_requests = max;
-                }
-            }
-        }
     }
 
     if content_length != rest.count  return false;
@@ -254,8 +214,6 @@ Client :: struct {
     close_after_send: bool;
 
     keep_alive_expiration: Apollo_Time;
-    max_requests := -1;
-    requests_handled: int;
 }
 
 fatal :: (message: string) {
@@ -267,8 +225,8 @@ fatal :: (message: string) {
     exit(1);
 }
 
-// Initial keep alive time set when a connection is accepted.
 ACCEPT_KEEP_ALIVE :: #run seconds_to_apollo(60);
+KEEP_ALIVE        :: #run seconds_to_apollo(600);
 
 MAX_REQUEST_SIZE :: 65536;
 

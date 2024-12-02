@@ -101,6 +101,8 @@ read_from_client :: (socket_fd: Socket, request_handler: Request_Handler) {
     assert(client != null);
 
     while true {
+        client.keep_alive_expiration = current_time_consensus() + KEEP_ALIVE;
+        
         offset := client.request.raw.data + client.request.raw_count;
         max    := client.request.raw.count - client.request.raw_count;
 
@@ -124,11 +126,7 @@ read_from_client :: (socket_fd: Socket, request_handler: Request_Handler) {
 
         handled := handle_request(client, request_handler);
         if handled {
-            client.requests_handled += 1;
-            if client.max_requests != -1 && client.max_requests == client.requests_handled  client.close_after_send = true;
-
             kqueue_mod(.WRITE, socket_fd);
-
             break;
         }
 
@@ -152,6 +150,8 @@ write_to_client :: (socket_fd: Socket) {
     }
 
     while client.response.serialized.count - client.response.bytes_sent > 0 {
+        client.keep_alive_expiration = current_time_consensus() + KEEP_ALIVE;
+
         offset := client.response.serialized.data + client.response.bytes_sent;
         max    := client.response.serialized.count - client.response.bytes_sent;
 

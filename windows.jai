@@ -100,6 +100,8 @@ iocp_worker :: (thread: *Thread) -> s64 {
                 read_from_client(client);
         }
 
+        client.keep_alive_expiration = current_time_consensus() + KEEP_ALIVE;
+
         ref_decrement(client);
 
         reset_temporary_storage();
