@@ -12,7 +12,7 @@ Request :: struct {
 }
 
 Response :: struct {
-    status:       int;
+    status:       Response_Status;
     headers:      [..] Header;
     headers.allocator = temp;
 
@@ -22,7 +22,7 @@ Response :: struct {
 Request_Handler :: #type (request: *Request, response: *Response);
 
 html :: (response: *Response, html: string) {
-    response.status = 200;
+    response.status = .Ok;
     response.body = html;
 
     header: Header = ---;
@@ -32,7 +32,7 @@ html :: (response: *Response, html: string) {
 }
 
 not_found :: (response: *Response) {
-    response.status = 404;
+    response.status = .Not_Found;
 }
 
 #scope_module
@@ -136,29 +136,52 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
     client.request.url = request_parts[1];
     client.request.body = rest;
 
+    if validate_request(*client.request) {
+        bad_request(client);
+        return true;
+    }
+
     log("% %\n", client.request.method, client.request.url);
 
     request_handler(*client.request, *client.response);
 
-    if client.response.status == 0  not_found(*client.response);
+    if client.response.status == .None  not_found(*client.response);
     send_response(client);
 
     return true;
 }
 
+validate_request :: (request: *Internal_Request) -> invalid: bool {
+    if request.method == {
+        case "DELETE";
+        case "GET";
+            if request.body.count != 0  return true;
+        case "HEAD";
+            if request.body.count != 0  return true;
+        case "OPTIONS";
+            if request.body.count != 0  return true;
+        case "PATCH";
+        case "PUT";
+        case;
+            return true;
+    }
+
+    return false;
+}
+
 bad_request :: (client: *Client) {
-    client.response.status = 400;
+    client.response.status = .Bad_Request;
     client.close_after_send = true;
     send_response(client);
 }
 
 not_found :: (client: *Client) {
-    client.response.status = 404;
+    client.response.status = .Not_Found;
     send_response(client);
 }
 
 send_html :: (client: *Client, html: string) {
-    client.response.status = 200;
+    client.response.status = .Ok;
 
     header: Header = ---;
     header.key = "Content-Type";
@@ -174,7 +197,7 @@ send_response :: (client: *Client) {
     b: String_Builder;
     b.allocator = temp;
 
-    append(*b, tprint("HTTP/1.1 %\r\n", client.response.status));
+    append(*b, tprint("HTTP/1.1 %\r\n", to_string(client.response.status)));
 
     for client.response.headers {
         append(*b, tprint("%: %\r\n", it.key, it.value));
@@ -231,6 +254,185 @@ fatal :: (message: string) {
     log("% :: [%] %\n", message, error, error_string);
 
     exit(1);
+}
+
+Response_Status :: enum {
+    None :: 0;
+
+    // Informational responses.
+    Continue            :: 100;
+    Switching_Protocols :: 101;
+    Early_Hints         :: 103;
+
+    // Successful responses.
+    Ok                            :: 200;
+    Created                       :: 201;
+    Accepted                      :: 202;
+    Non_Authoritative_Information :: 203;
+    No_Content                    :: 204;
+    Reset_Content                 :: 205;
+    Partial_Content               :: 206;
+
+    // Redirection messages.
+    Multiple_Choices   :: 300;
+    Moved_Permanently  :: 301;
+    Found              :: 302;
+    See_Other          :: 303;
+    Not_Modified       :: 304;
+    Temporary_Redirect :: 307;
+    Permanent_Redirect :: 308;
+
+    // Client error responses.
+    Bad_Request                     :: 400;
+    Unauthorized                    :: 401;
+    Payment_Required                :: 402;
+    Forbidden                       :: 403;
+    Not_Found                       :: 404;
+    Method_Not_Allowed              :: 405;
+    Not_Acceptable                  :: 406;
+    Proxy_Authentication_Required   :: 407;
+    Request_Timeout                 :: 408;
+    Conflict                        :: 409;
+    Gone                            :: 410;
+    Length_Required                 :: 411;
+    Precondition_Failed             :: 412;
+    Content_Too_Large               :: 413;
+    Uri_Too_Long                    :: 414;
+    Unsupported_Media_Type          :: 415;
+    Range_Not_Satisfiable           :: 416;
+    Expectation_Failed              :: 417;
+    I_Am_A_Teapot                   :: 418;
+    Misdirected_Request             :: 421;
+    Upgrade_Required                :: 426;
+    Precondition_Required           :: 428;
+    Too_Many_Requests               :: 429;
+    Request_Header_Fields_Too_Large :: 431;
+    Unavailable_For_Legal_Reasons   :: 451;
+
+    // Server error responses.
+    Internal_Server_Error           :: 500;
+    Not_Implemented                 :: 501;
+    Bad_Gateway                     :: 502;
+    Service_Unavailable             :: 503;
+    Gateway_Timeout                 :: 504;
+    Http_Version_Not_Supported      :: 505;
+    Variant_Also_Negotiates         :: 506;
+    Not_Extended                    :: 510;
+    Network_Authentication_Required :: 511;
+}
+
+to_string :: (response_status: Response_Status) -> string {
+    if #complete response_status == {
+        case .None;
+            return "None";
+
+        case .Continue;
+            return "100 Continue";
+        case .Switching_Protocols;
+            return "101 Switching Protocols";
+        case .Early_Hints;
+            return "103 Early Hints";
+
+        case .Ok;
+            return "200 OK";
+        case .Created;
+            return "201 Created";
+        case .Accepted;
+            return "202 Accepted";
+        case .Non_Authoritative_Information;
+            return "303 Non-Authoritative Information";
+        case .No_Content;
+            return "204 No Content";
+        case .Reset_Content;
+            return "205 Reset Content";
+        case .Partial_Content;
+            return "206 Partial Content";
+
+        case .Multiple_Choices;
+            return "300 Multiple Choices";
+        case .Moved_Permanently;
+            return "301 Moved Permanently";
+        case .Found;
+            return "302 Found";
+        case .See_Other;
+            return "303 See Other";
+        case .Not_Modified;
+            return "304 Not Modified";
+        case .Temporary_Redirect;
+            return "307 Temporary Redirect";
+        case .Permanent_Redirect;
+            return "308 Permanent Redirect";
+
+        case .Bad_Request;
+            return "400 Bad Request";
+        case .Unauthorized;
+            return "401 Unauthorized";
+        case .Payment_Required;
+            return "402 Payment Required";
+        case .Forbidden;
+            return "403 Forbidden";
+        case .Not_Found;
+            return "404 Not Found";
+        case .Method_Not_Allowed;
+            return "405 Method Not Allowed";
+        case .Not_Acceptable;
+            return "406 Not Acceptable";
+        case .Proxy_Authentication_Required;
+            return "407 Proxy Authentication Required";
+        case .Request_Timeout;
+            return "408 Request Timeout";
+        case .Conflict;
+            return "409 Conflict";
+        case .Gone;
+            return "410 Gone";
+        case .Length_Required;
+            return "411 Length Required";
+        case .Precondition_Failed;
+            return "412 Precondition Failed";
+        case .Content_Too_Large;
+            return "413 Content Too Large";
+        case .Uri_Too_Long;
+            return "414 URI Too Long";
+        case .Unsupported_Media_Type;
+            return "415 Unsupported Media Type";
+        case .Range_Not_Satisfiable;
+            return "416 Range Not Satisfiable";
+        case .Expectation_Failed;
+            return "417 Expectation Failed";
+        case .I_Am_A_Teapot;
+            return "418 I'm a teapot";
+        case .Misdirected_Request;
+            return "421 Misdirected Request";
+        case .Upgrade_Required;
+            return "426 Upgrade Required";
+        case .Precondition_Required;
+            return "428 Precondition Failed";
+        case .Too_Many_Requests;
+            return "429 Too Many Requests";
+        case .Request_Header_Fields_Too_Large;
+            return "431 Request Header Fields Too Large";
+        case .Unavailable_For_Legal_Reasons;
+            return "451 Unavailable For Legal Reasons";
+
+        case .Internal_Server_Error;
+            return "500 Internal Server Error";
+        case .Not_Implemented;
+            return "501 Not Implemented";
+        case .Bad_Gateway;
+            return "502 Bad Gateway";
+        case .Service_Unavailable;
+            return "503 Service Unavailable";
+        case .Gateway_Timeout;
+            return "504 Gateway Timeout";
+        case .Http_Version_Not_Supported;
+            return "505 HTTP Version Not Supported";
+        case .Variant_Also_Negotiates;
+            return "506 Variant Also Negotiates";
+        case .Not_Extended;
+            return "510 Not Extended";
+        case .Network_Authentication_Required;
+            return "511 Network Authentication Required";
+    }
 }
 
 ACCEPT_KEEP_ALIVE :: #run seconds_to_apollo(60);
