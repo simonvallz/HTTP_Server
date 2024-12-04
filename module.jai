@@ -3,19 +3,12 @@ http_server :: (port: u16, request_handler: Request_Handler) {
 }
 
 Request :: struct {
-    url:     string; // View into `raw`.
-    method:  string; // View into `raw`.
+    url:     string;
+    method:  string;
     headers: [..] Header;
     headers.allocator = temp;
 
-    body: string; // View into `raw`.
-
-    #if OS == .WINDOWS {
-        buffer: WSABUF;
-    }
-
-    raw: [MAX_REQUEST_SIZE] u8;
-    raw_count: int;
+    body: string;
 }
 
 Response :: struct {
@@ -24,13 +17,6 @@ Response :: struct {
     headers.allocator = temp;
 
     body: string; // Allocate with temporary storage!
-
-    #if OS == .WINDOWS {
-        buffer: WSABUF;
-    }
-
-    serialized: string; // :Free-able
-    bytes_sent: int;
 }
 
 Request_Handler :: #type (request: *Request, response: *Response);
@@ -50,6 +36,28 @@ not_found :: (response: *Response) {
 }
 
 #scope_module
+
+Internal_Request :: struct {
+    #as using request: Request;
+
+    #if OS == .WINDOWS {
+        buffer: WSABUF;
+    }
+
+    raw: [MAX_REQUEST_SIZE] u8;
+    raw_count: int;
+}
+
+Internal_Response :: struct {
+    #as using response: Response;
+
+    #if OS == .WINDOWS {
+        buffer: WSABUF;
+    }
+
+    serialized: string; // :Free-able
+    bytes_sent: int;
+}
 
 setup_socket :: (port: u16) -> Socket {
     socket_fd := socket(AF_INET, .SOCK_STREAM, 0);
@@ -208,8 +216,8 @@ Client :: struct {
 
     socket_fd: Socket;
 
-    request:  Request;
-    response: Response;
+    request:  Internal_Request;
+    response: Internal_Response;
 
     close_after_send: bool;
 
