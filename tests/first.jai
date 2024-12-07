@@ -44,7 +44,6 @@ test :: () {
 }
 
 message_loop :: (w: Workspace) {
-    has_run_tests := false;
     test_procs: [..] string;
 
     while true {
@@ -70,28 +69,30 @@ message_loop :: (w: Workspace) {
             case .PHASE;
                 phase := cast(*Message_Phase) message;
 
-                if phase.phase == .TYPECHECKED_ALL_WE_CAN && !has_run_tests {
-                    has_run_tests = true;
+                if phase.phase == .TYPECHECKED_ALL_WE_CAN {
+                    if test_procs.count > 0 {
+                        code: String_Builder;
 
-                    code: String_Builder;
+                        append(*code, "#run {\n");
 
-                    append(*code, "#run {\n");
-
-                    for test_procs {
-                        append(*code, tprint("    %();\n", it));
-                    }
-
-                    append(*code, #string jai
-                        if context.has_failed_test {
-                            print("\n\nSOME TESTS FAILED!!!\n");
-
-                            exit(1);
+                        for test_procs {
+                            append(*code, tprint("    %();\n", it));
                         }
-                    jai);
 
-                    append(*code, "}\n");
+                        append(*code, #string jai
+                            if context.has_failed_test {
+                                print("\n\nSOME TESTS FAILED!!!\n");
 
-                    add_build_string(builder_to_string(*code), w);
+                                exit(1);
+                            }
+                        jai);
+
+                        append(*code, "}\n");
+
+                        add_build_string(builder_to_string(*code), w);
+
+                        array_reset(*test_procs);
+                    }
                 }
 
             case .COMPLETE;
