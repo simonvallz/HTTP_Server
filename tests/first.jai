@@ -23,12 +23,15 @@ test :: () {
             if expression {
                 print("PASS :: %\n", context.current_test_description);
             } else {
+                context.has_failed_test = true;
+
                 message := sprint("FAIL :: % - %", context.current_test_description, loc);
                 print("%\n", message);
             }
         }
 
         #add_context current_test_description: string;
+        #add_context has_failed_test: bool;
 
         #import "Basic";
     jai, w);
@@ -41,6 +44,9 @@ test :: () {
 }
 
 message_loop :: (w: Workspace) {
+    has_run_tests := false;
+    test_procs: [..] string;
+
     while true {
         message := compiler_wait_for_message();
 
@@ -54,11 +60,38 @@ message_loop :: (w: Workspace) {
 
                         for it.expression.notes {
                             if it.text == "test" {
-                                add_build_string(tprint("#run,stallable %();", procedure_name), w);
+                                array_add(*test_procs, procedure_name);
                                 break;
                             }
                         }
                     }
+                }
+
+            case .PHASE;
+                phase := cast(*Message_Phase) message;
+
+                if phase.phase == .TYPECHECKED_ALL_WE_CAN && !has_run_tests {
+                    has_run_tests = true;
+
+                    code: String_Builder;
+
+                    append(*code, "#run {\n");
+
+                    for test_procs {
+                        append(*code, tprint("    %();\n", it));
+                    }
+
+                    append(*code, #string jai
+                        if context.has_failed_test {
+                            print("\n\nSOME TESTS FAILED!!!\n");
+
+                            exit(1);
+                        }
+                    jai);
+
+                    append(*code, "}\n");
+
+                    add_build_string(builder_to_string(*code), w);
                 }
 
             case .COMPLETE;

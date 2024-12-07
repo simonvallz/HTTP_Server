@@ -19,6 +19,11 @@ Response :: struct {
     body: string; // Allocate with temporary storage!
 }
 
+Header :: struct {
+    key:   string;
+    value: string;
+}
+
 Request_Handler :: #type (request: *Request, response: *Response);
 
 html :: (response: *Response, html: string) {
@@ -96,41 +101,49 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
         return true;
     }
 
-    found, headers_string:, rest = split_from_left(rest, "\r\n\r\n");
-    if !found  return false;
+    // We maybe don't have any headers.
+    if starts_with(rest, "\r\n") {
+        count := "\r\n".count;
 
-    content_length := 0;
+        rest.data += count;
+        rest.count -= count;
+    } else {
+        found, headers_string:, rest = split_from_left(rest, "\r\n\r\n");
+        if !found  return false;
 
-    headers := split(headers_string, "\r\n",, temp);
-    for headers {
-        found, key, value := split_from_left(it, ":");
-        if !found {
-            bad_request(client);
-            return true;
-        }
+        content_length := 0;
 
-        key = trim(key);
-        value = trim(value);
-
-        header: Header = ---;
-        header.key = key;
-        header.value = value;
-        array_add(*client.request.headers, header);
-
-        if equal_nocase(key, "Content-Length") {
-            content_length, success := parse_int(*value);
-            if !success {
+        headers := split(headers_string, "\r\n",, temp);
+        for headers {
+            found, key, value := split_from_left(it, ":");
+            if !found {
                 bad_request(client);
                 return true;
             }
+
+            key = trim(key);
+            value = trim(value);
+
+            header: Header = ---;
+            header.key = key;
+            header.value = value;
+            array_add(*client.request.headers, header);
+
+            if equal_nocase(key, "Content-Length") {
+                content_length, success := parse_int(*value);
+                if !success {
+                    bad_request(client);
+                    return true;
+                }
+            }
+
+            if equal_nocase(key, "Connection") && equal_nocase(value, "close") {
+                client.close_after_send = true;
+            }
         }
 
-        if equal_nocase(key, "Connection") && equal_nocase(value, "close") {
-            client.close_after_send = true;
-        }
+        if content_length != rest.count  return false;
     }
-
-    if content_length != rest.count  return false;
 
     client.request.method = request_parts[0];
     client.request.url = request_parts[1];
@@ -219,11 +232,6 @@ reset :: (client: *Client) {
 
     client.request.headers.allocator = temp;
     client.response.headers.allocator = temp;
-}
-
-Header :: struct {
-    key:   string;
-    value: string;
 }
 
 Client :: struct {
