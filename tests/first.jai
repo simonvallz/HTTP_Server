@@ -14,16 +14,21 @@ test :: () {
     compiler_begin_intercept(w);
 
     add_build_string(#string jai
-        failed_tests: [..] string;
+        test :: (description: string, proc: () -> ()) {
+            context.current_test_description = description;
+            proc();
+        }
 
-        test :: (expression: bool, message: string) {
+        expect :: (expression: bool, loc := #caller_location) {
             if expression {
-                print("PASS :: %\n", message);
+                print("PASS :: %\n", context.current_test_description);
             } else {
-                array_add(*failed_tests, message);
-                print("FAIL :: %\n", message);
+                message := sprint("FAIL :: % - %", context.current_test_description, loc);
+                print("%\n", message);
             }
         }
+
+        #add_context current_test_description: string;
 
         #import "Basic";
     jai, w);
@@ -49,7 +54,7 @@ message_loop :: (w: Workspace) {
 
                         for it.expression.notes {
                             if it.text == "test" {
-                                add_build_string(tprint("#run %();", procedure_name), w);
+                                add_build_string(tprint("#run,stallable %();", procedure_name), w);
                                 break;
                             }
                         }
