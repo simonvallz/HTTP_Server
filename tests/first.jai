@@ -11,7 +11,7 @@ test :: () {
     target_options.output_type = .NO_OUTPUT;
     set_build_options(target_options, w);
 
-    compiler_begin_intercept(w);
+    compiler_begin_intercept(w, .SKIP_EXPRESSIONS_WITHOUT_NOTES);
 
     add_build_string(#string jai
         test :: (description: string, proc: () -> ()) {
