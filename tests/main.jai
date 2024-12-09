@@ -73,6 +73,26 @@ handle_request :: () {
             expect(request.body == "");
         });
     });
+
+    test("handle_request rejects wrong HTTP versions", () {
+        message: String_Builder;
+
+        append(*message, "GET / HTTP/2\r\n");
+        append(*message, "\r\n");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(handled);
+        expect(client.response.status == .Bad_Request);
+    });
 } @test
 
 set_request_to :: (request: *Internal_Request, body: string) {
