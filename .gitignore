@@ -1,2 +1,4 @@
 .build
 main
+main.exe
+main.pdb
