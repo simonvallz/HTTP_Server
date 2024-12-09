@@ -154,8 +154,6 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
         return true;
     }
 
-    log("% %\n", client.request.method, client.request.url);
-
     request_handler(*client.request, *client.response);
 
     if client.response.status == .None  not_found(*client.response);
