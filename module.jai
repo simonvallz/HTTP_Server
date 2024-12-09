@@ -95,7 +95,6 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
         bad_request(client);
         return true;
     }
-
     if request_parts[2] != "HTTP/1.1" {
         bad_request(client);
         return true;
@@ -121,8 +120,8 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
                 return true;
             }
 
-            key = trim(key);
-            value = trim(value);
+            key = trim(key, chars=" ");
+            value = trim(value, chars=" ");
 
             header: Header = ---;
             header.key = key;
@@ -130,7 +129,8 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
             array_add(*client.request.headers, header);
 
             if equal_nocase(key, "Content-Length") {
-                content_length, success := parse_int(*value);
+                success: bool;
+                content_length, success = parse_int(*copy_temporary_string(value), spaces="", delimiters="");
                 if !success {
                     bad_request(client);
                     return true;
@@ -164,15 +164,15 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
 
 validate_request :: (request: *Internal_Request) -> invalid: bool {
     if request.method == {
-        case "DELETE";
+        case "DELETE"; #through;
         case "GET";
             if request.body.count != 0  return true;
         case "HEAD";
             if request.body.count != 0  return true;
         case "OPTIONS";
             if request.body.count != 0  return true;
-        case "PATCH";
-        case "PUT";
+        case "PATCH"; #through;
+        case "PUT"; #through;
         case;
             return true;
     }
