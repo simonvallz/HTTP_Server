@@ -15,23 +15,24 @@ test :: () {
 
     add_build_string(#string jai
         test :: (description: string, proc: () -> ()) {
-            context.current_test_description = description;
+            context.one_or_more_expect_failed_in_this_test = false;
+
             proc();
-        }
 
-        expect :: (expression: bool, loc := #caller_location) {
-            if expression {
-                print("PASS :: %\n", context.current_test_description);
+            if context.one_or_more_expect_failed_in_this_test {
+                context.one_or_more_tests_failed = true;
+                print("FAIL :: %\n", description);
             } else {
-                context.has_failed_test = true;
-
-                message := sprint("FAIL :: % - %", context.current_test_description, loc);
-                print("%\n", message);
+                print("PASS :: %\n", description);
             }
         }
 
-        #add_context current_test_description: string;
-        #add_context has_failed_test: bool;
+        expect :: (expression: bool, loc := #caller_location) {
+            if !expression  context.one_or_more_expect_failed_in_this_test = true;
+        }
+
+        #add_context one_or_more_tests_failed: bool;
+        #add_context one_or_more_expect_failed_in_this_test: bool;
 
         #import "Basic";
     jai, w);
@@ -80,7 +81,7 @@ message_loop :: (w: Workspace) {
                         }
 
                         append(*code, #string jai
-                            if context.has_failed_test {
+                            if context.one_or_more_tests_failed {
                                 print("\n\nSOME TESTS FAILED!!!\n");
 
                                 exit(1);
