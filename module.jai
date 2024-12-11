@@ -131,7 +131,7 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
             if equal_nocase(key, "Content-Length") {
                 success: bool;
                 content_length, success = parse_int(*copy_temporary_string(value), spaces="", delimiters="");
-                if !success {
+                if !success || content_length < 0 {
                     bad_request(client);
                     return true;
                 }
@@ -142,7 +142,12 @@ handle_request :: (client: *Client, request_handler: Request_Handler) -> handled
             }
         }
 
-        if content_length != rest.count  return false;
+        if content_length > rest.count {
+            return false;
+        } else if content_length < rest.count {
+            bad_request(client);
+            return true;
+        }
     }
 
     client.request.method = request_parts[0];

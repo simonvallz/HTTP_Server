@@ -94,13 +94,244 @@ handle_request :: () {
         expect(client.response.status == .Bad_Request);
     });
 
-    test("handle_request rejects DELETE with body", () {
+    test("handle_request bad requests DELETE with body", () {
         message: String_Builder;
 
         append(*message, "DELETE / HTTP/1.1\r\n");
         append(*message, "Content-Length: 5\r\n");
         append(*message, "\r\n");
         append(*message, "Hello");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(handled);
+        expect(client.response.status == .Bad_Request);
+    });
+
+    test("handle_request bad requests GET with body", () {
+        message: String_Builder;
+
+        append(*message, "GET / HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+        append(*message, "\r\n");
+        append(*message, "Hello");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(handled);
+        expect(client.response.status == .Bad_Request);
+    });
+
+    test("handle_request bad requests HEAD with body", () {
+        message: String_Builder;
+
+        append(*message, "HEAD / HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+        append(*message, "\r\n");
+        append(*message, "Hello");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(handled);
+        expect(client.response.status == .Bad_Request);
+    });
+
+    test("handle_request bad requests OPTIONS with body", () {
+        message: String_Builder;
+
+        append(*message, "OPTIONS / HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+        append(*message, "\r\n");
+        append(*message, "Hello");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(handled);
+        expect(client.response.status == .Bad_Request);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        http_message := "GET";
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        http_message := "GET /url";
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        http_message := "GET /url HTTP/1.1\r\n";
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        message: String_Builder;
+
+        append(*message, "GET /url HTTP/1.1\r\n");
+        append(*message, "Conte");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        message: String_Builder;
+
+        append(*message, "GET /url HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        message: String_Builder;
+
+        append(*message, "GET /url HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+        append(*message, "\r\n");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle partial request", () {
+        message: String_Builder;
+
+        append(*message, "GET /url HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+        append(*message, "\r\n");
+        append(*message, "hell");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(!handled);
+    });
+
+    test("handle_request doesn't handle body larger than Content-Length", () {
+        message: String_Builder;
+
+        append(*message, "GET /url HTTP/1.1\r\n");
+        append(*message, "Content-Length: 5\r\n");
+        append(*message, "\r\n");
+        append(*message, "hello there");
+
+        http_message := builder_to_string(*message);
+
+        client: Client;
+
+        set_request_to(*client.request, http_message);
+
+        handled := handle_request(*client, (request: *Request, response: *Response) {
+            expect(false);
+        });
+
+        expect(handled);
+        expect(client.response.status == .Bad_Request);
+    });
+
+    test("handle_request bad requests negative Content-Length", () {
+        message: String_Builder;
+
+        append(*message, "GET /url HTTP/1.1\r\n");
+        append(*message, "Content-Length: -5\r\n");
+        append(*message, "\r\n");
+        append(*message, "hello");
 
         http_message := builder_to_string(*message);
 
